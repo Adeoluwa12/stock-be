@@ -7,6 +7,7 @@ import numpy as np
 from typing import List, Dict, Union, Tuple, Optional
 import logging
 from datetime import datetime, timedelta
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
