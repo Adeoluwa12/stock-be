@@ -24,10 +24,12 @@ app = FastAPI()
 # )
 
 
-# Update this part in your main.py
+# Get frontend URL from environment variable or use a default for local development
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # We'll update this with the specific frontend URL later
+    allow_origins=[frontend_url],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
