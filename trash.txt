@@ -1,0 +1,723 @@
+# # from fastapi import FastAPI
+# # from fastapi.middleware.cors import CORSMiddleware
+# # from fastapi.responses import FileResponse, JSONResponse
+# # import yfinance as yf
+# # import pandas as pd
+# # from typing import List, Dict, Union
+
+# # app = FastAPI()
+
+# # # Enable CORS
+# # app.add_middleware(
+# #     CORSMiddleware,
+# #     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+# #     allow_credentials=True,
+# #     allow_methods=["*"],
+# #     allow_headers=["*"],
+# # )
+
+# # @app.get("/favicon.ico")
+# # async def favicon():
+# #     return FileResponse("favicon.ico", media_type="image/x-icon")
+
+# # # -------------------- MACD Divergence --------------------
+# # def get_macd_signal(symbol: str) -> Dict[str, Union[str, float, None]]:
+# #     try:
+# #         data = yf.download(symbol, period="3mo", interval="1d", progress=False)
+# #         if data.empty or len(data) < 26:
+# #             return {"signal": "HOLD", "price": None}
+
+# #         data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
+# #         data["EMA26"] = data["Close"].ewm(span=26, adjust=False).mean()
+# #         data["MACD"] = data["EMA12"] - data["EMA26"]
+# #         data["Signal Line"] = data["MACD"].ewm(span=9, adjust=False).mean()
+
+# #         latest_macd = data["MACD"].iloc[-1]
+# #         latest_signal = data["Signal Line"].iloc[-1]
+# #         price = data["Close"].iloc[-1]
+
+# #         signal = "BUY" if latest_macd > latest_signal else "SELL"
+# #         return {"signal": signal, "price": float(price)}
+# #     except Exception:
+# #         return {"signal": "HOLD", "price": None}
+
+# # # -------------------- Auto Chart Pattern (Simple Double Top/Bottom) --------------------
+# # def detect_chart_pattern(symbol: str) -> str:
+# #     try:
+# #         data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+# #         if data.empty or len(data) < 50:
+# #             return "SELL"
+
+# #         recent = data["Close"].values[-30:]
+# #         pattern = "NONE"
+# #         verdict = "SELL"
+
+# #         # Double Bottom → BUY
+# #         min1 = min(recent[:10])
+# #         min2 = min(recent[15:25])
+# #         if abs(min1 - min2) < 2 and recent[-1] > min1:
+# #             pattern = "DOUBLE BOTTOM"
+# #             verdict = "BUY"
+
+# #         # Double Top → SELL
+# #         max1 = max(recent[:10])
+# #         max2 = max(recent[15:25])
+# #         if abs(max1 - max2) < 2 and recent[-1] < max1:
+# #             pattern = "DOUBLE TOP"
+# #             verdict = "SELL"
+
+# #         return verdict
+# #     except Exception:
+# #         return "SELL"
+
+# # # -------------------- Elliott Wave (Simplified Momentum Check) --------------------
+# # def elliott_wave_signal(symbol: str) -> str:
+# #     try:
+# #         data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+# #         if data.empty or len(data) < 10:
+# #             return "SELL"
+
+# #         close = data["Close"]
+# #         recent = close[-10:]
+# #         trend = recent.pct_change().mean()
+
+# #         return "BUY" if trend > 0 else "SELL"
+# #     except Exception:
+# #         return "SELL"
+
+# # # -------------------- Cycles Analysis (SMA cross) --------------------
+# # def cycles_analysis(symbol: str) -> str:
+# #     try:
+# #         data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+# #         if data.empty or len(data) < 50:
+# #             return "SELL"
+
+# #         data["SMA20"] = data["Close"].rolling(window=20).mean()
+# #         data["SMA50"] = data["Close"].rolling(window=50).mean()
+
+# #         if pd.isna(data["SMA20"].iloc[-1]) or pd.isna(data["SMA50"].iloc[-1]):
+# #             return "SELL"
+
+# #         return "BUY" if data["SMA20"].iloc[-1] > data["SMA50"].iloc[-1] else "SELL"
+# #     except Exception:
+# #         return "SELL"
+
+# # # -------------------- All Chart Patterns (Summary Vote) --------------------
+# # def all_chart_patterns(votes: List[str]) -> str:
+# #     buy_count = votes.count("BUY")
+# #     sell_count = votes.count("SELL")
+# #     return "BUY" if buy_count > sell_count else "SELL"
+
+# # # -------------------- API Endpoint --------------------
+# # @app.get("/analyze")
+# # async def analyze():
+# #     stock_list = [
+# #         "AAPL", "GOOGL", "MSFT", "TSLA", "AMZN",
+# #         "NVDA", "META", "NFLX", "BABA", "AMD",
+# #         "INTC", "UBER", "SHOP", "PYPL", "PEP",
+# #         "KO", "DIS", "NKE", "WMT", "CRM"
+# #     ]
+# #     results = []
+
+# #     for symbol in stock_list:
+# #         macd = get_macd_signal(symbol)
+# #         pattern = detect_chart_pattern(symbol)
+# #         elliott = elliott_wave_signal(symbol)
+# #         cycles = cycles_analysis(symbol)
+
+# #         all_patterns_vote = all_chart_patterns([
+# #             macd["signal"],
+# #             pattern,
+# #             elliott,
+# #             cycles
+# #         ])
+
+# #         stock_data = {
+# #             "symbol": symbol,
+# #             "price": macd["price"],
+# #             "Auto Chart Patterns": pattern,
+# #             "MACD Divergence": macd["signal"],
+# #             "Elliott Wave": elliott,
+# #             "Cycles Analysis": cycles,
+# #             "All Chart Patterns": all_patterns_vote
+# #         }
+
+# #         results.append(stock_data)
+
+# #     return JSONResponse(content=results)
+
+
+
+
+
+
+
+# from fastapi import FastAPI
+# from fastapi.middleware.cors import CORSMiddleware
+# from fastapi.responses import FileResponse, JSONResponse
+# import yfinance as yf
+# import pandas as pd
+# import numpy as np
+# from typing import List, Dict, Union, Tuple, Optional
+# from enum import Enum
+# from datetime import datetime, timedelta
+
+# app = FastAPI()
+
+# # Enable CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# @app.get("/favicon.ico")
+# async def favicon():
+#     return FileResponse("favicon.ico", media_type="image/x-icon")
+
+# # ==================== MACD INDICATOR ====================
+# def get_macd_signal(symbol: str) -> Dict[str, Union[str, float, None]]:
+#     try:
+#         data = yf.download(symbol, period="3mo", interval="1d", progress=False)
+#         if data.empty or len(data) < 26:
+#             return {"signal": "HOLD", "price": None}
+
+#         data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
+#         data["EMA26"] = data["Close"].ewm(span=26, adjust=False).mean()
+#         data["MACD"] = data["EMA12"] - data["EMA26"]
+#         data["Signal Line"] = data["MACD"].ewm(span=9, adjust=False).mean()
+
+#         latest_macd = data["MACD"].iloc[-1]
+#         latest_signal = data["Signal Line"].iloc[-1]
+#         price = data["Close"].iloc[-1]
+
+#         signal = "BUY" if latest_macd > latest_signal else "SELL"
+#         return {"signal": signal, "price": float(price)}
+#     except Exception:
+#         return {"signal": "HOLD", "price": None}
+
+# # ==================== ELLIOTT WAVE ANALYSIS ====================
+# class WaveType(Enum):
+#     NONE = "NONE"
+#     IMPULSE = "IMPULSE"
+#     CORRECTIVE = "CORRECTIVE"
+#     DIAGONAL = "DIAGONAL"
+#     ZIGZAG = "ZIGZAG"
+#     FLAT = "FLAT"
+#     TRIANGLE = "TRIANGLE"
+#     COMBINATION = "COMBINATION"
+
+# def detect_swings(data: pd.DataFrame, swing_length: int = 5) -> Tuple[List[int], List[float], List[int], List[float]]:
+#     highs = data['High'].rolling(window=swing_length, center=True).max()
+#     lows = data['Low'].rolling(window=swing_length, center=True).min()
+    
+#     swing_highs_idx = []
+#     swing_highs = []
+#     swing_lows_idx = []
+#     swing_lows = []
+    
+#     for i in range(swing_length, len(data)-swing_length):
+#         if data['High'][i] == highs[i]:
+#             left = data['High'][i-swing_length:i]
+#             right = data['High'][i+1:i+swing_length+1]
+#             if all(data['High'][i] > left) and all(data['High'][i] > right):
+#                 swing_highs_idx.append(i)
+#                 swing_highs.append(data['High'][i])
+#         elif data['Low'][i] == lows[i]:
+#             left = data['Low'][i-swing_length:i]
+#             right = data['Low'][i+1:i+swing_length+1]
+#             if all(data['Low'][i] < left) and all(data['Low'][i] < right):
+#                 swing_lows_idx.append(i)
+#                 swing_lows.append(data['Low'][i])
+    
+#     return swing_highs_idx, swing_highs, swing_lows_idx, swing_lows
+
+# def is_impulse_wave(swings: Tuple[List[int], List[float], List[int], List[float]], tolerance: float = 0.05) -> bool:
+#     highs_idx, highs, lows_idx, lows = swings
+    
+#     if len(highs) < 3 or len(lows) < 2:
+#         return False
+    
+#     # Check wave structure (5 waves)
+#     wave1 = highs[0] - lows[0]
+#     wave2 = highs[0] - lows[1]
+#     wave3 = highs[1] - lows[1]
+#     wave4 = highs[1] - lows[2] if len(lows) > 2 else 0
+#     wave5 = highs[2] - lows[2] if len(lows) > 2 else 0
+    
+#     # Basic impulse wave rules
+#     conditions = [
+#         wave3 > wave1 and wave3 > wave5,  # Wave 3 is not the shortest
+#         wave2 < wave1 * (1 + tolerance),  # Wave 2 retracement
+#         wave4 < wave3 * (1 + tolerance),  # Wave 4 retracement
+#         wave5 > wave4 * (1 + tolerance),  # Wave 5 extends beyond wave 4
+#         highs[1] > highs[0] and highs[1] > highs[2]  # Wave 3 peak is highest
+#     ]
+    
+#     return all(conditions)
+
+# def is_corrective_wave(swings: Tuple[List[int], List[float], List[int], List[float]], tolerance: float = 0.05) -> bool:
+#     highs_idx, highs, lows_idx, lows = swings
+    
+#     if len(highs) < 2 or len(lows) < 3:
+#         return False
+    
+#     # Check ABC correction structure
+#     waveA = highs[0] - lows[0]
+#     waveB = highs[1] - lows[1]
+#     waveC = highs[1] - lows[2]
+    
+#     # Basic corrective wave rules
+#     conditions = [
+#         waveB < waveA * (1 + tolerance),  # Wave B retracement
+#         waveC > waveB * (1 + tolerance),  # Wave C extends beyond wave B
+#         lows[2] < lows[0],  # Wave C goes beyond wave A
+#         waveC > waveA * 0.618 and waveC < waveA * 1.618  # Fibonacci relationship
+#     ]
+    
+#     return all(conditions)
+
+# def detect_elliott_wave(symbol: str) -> Dict[str, str]:
+#     try:
+#         data = yf.download(symbol, period="1y", interval="1d", progress=False)
+#         if data.empty or len(data) < 100:
+#             return {"elliott_wave": "NONE", "wave_verdict": "HOLD"}
+        
+#         swings = detect_swings(data)
+        
+#         if is_impulse_wave(swings):
+#             # Check if we're in wave 5 (potential reversal)
+#             highs_idx, highs, lows_idx, lows = swings
+#             if len(highs) >= 3 and len(lows) >= 3:
+#                 last_high = highs[-1]
+#                 prev_high = highs[-2]
+#                 if last_high > prev_high:
+#                     return {"elliott_wave": "IMPULSE_WAVE_5", "wave_verdict": "SELL"}
+#                 else:
+#                     return {"elliott_wave": "IMPULSE_WAVE_3", "wave_verdict": "BUY"}
+        
+#         if is_corrective_wave(swings):
+#             highs_idx, highs, lows_idx, lows = swings
+#             if len(lows) >= 3:
+#                 last_low = lows[-1]
+#                 prev_low = lows[-2]
+#                 if last_low < prev_low:
+#                     return {"elliott_wave": "CORRECTIVE_WAVE_C", "wave_verdict": "BUY"}
+#                 else:
+#                     return {"elliott_wave": "CORRECTIVE_WAVE_B", "wave_verdict": "SELL"}
+        
+#         return {"elliott_wave": "NONE", "wave_verdict": "HOLD"}
+#     except Exception as e:
+#         print(f"Error detecting Elliott Wave for {symbol}: {str(e)}")
+#         return {"elliott_wave": "NONE", "wave_verdict": "HOLD"}
+
+# # ==================== AUTO CHART PATTERNS ====================
+# def detect_zigzag_pivots(prices: pd.Series, depth: int = 5) -> Tuple[List[int], List[float]]:
+#     highs = prices.rolling(window=depth, center=True).max()
+#     lows = prices.rolling(window=depth, center=True).min()
+    
+#     pivot_indices = []
+#     pivot_prices = []
+    
+#     for i in range(depth, len(prices)-depth):
+#         if prices[i] == highs[i]:
+#             left = prices[i-depth:i]
+#             right = prices[i+1:i+depth+1]
+#             if all(prices[i] > left) and all(prices[i] > right):
+#                 pivot_indices.append(i)
+#                 pivot_prices.append(prices[i])
+#         elif prices[i] == lows[i]:
+#             left = prices[i-depth:i]
+#             right = prices[i+1:i+depth+1]
+#             if all(prices[i] < left) and all(prices[i] < right):
+#                 pivot_indices.append(i)
+#                 pivot_prices.append(prices[i])
+    
+#     return pivot_indices, pivot_prices
+
+# def detect_trend_lines(pivot_indices: List[int], pivot_prices: List[float], error_threshold: float = 0.02) -> List[Tuple[float, float]]:
+#     if len(pivot_indices) < 3:
+#         return []
+    
+#     lines = []
+#     n = len(pivot_indices)
+    
+#     for i in range(n-1):
+#         for j in range(i+1, n):
+#             x1, y1 = pivot_indices[i], pivot_prices[i]
+#             x2, y2 = pivot_indices[j], pivot_prices[j]
+            
+#             if x2 - x1 < 5:
+#                 continue
+                
+#             slope = (y2 - y1) / (x2 - x1)
+#             intercept = y1 - slope * x1
+            
+#             valid_points = 0
+#             for k in range(n):
+#                 if k == i or k == j:
+#                     continue
+#                 x = pivot_indices[k]
+#                 y = pivot_prices[k]
+#                 predicted_y = slope * x + intercept
+#                 if abs(y - predicted_y) / y <= error_threshold:
+#                     valid_points += 1
+            
+#             if valid_points >= 1:
+#                 lines.append((slope, intercept))
+    
+#     return lines
+
+# def classify_auto_pattern(pivot_indices: List[int], pivot_prices: List[float], lines: List[Tuple[float, float]]) -> str:
+#     if len(lines) < 2:
+#         return "NONE"
+    
+#     slope1, intercept1 = lines[0]
+#     slope2, intercept2 = lines[1]
+    
+#     if abs(slope1 - slope2) < 0.001:
+#         if slope1 > 0:
+#             return "ASCENDING CHANNEL"
+#         elif slope1 < 0:
+#             return "DESCENDING CHANNEL"
+#         else:
+#             return "RANGING CHANNEL"
+    
+#     if slope1 * slope2 > 0:
+#         if abs(slope1) > abs(slope2):
+#             if slope1 > 0:
+#                 return "RISING WEDGE (EXPANDING)"
+#             else:
+#                 return "FALLING WEDGE (EXPANDING)"
+#         else:
+#             if slope1 > 0:
+#                 return "RISING WEDGE (CONTRACTING)"
+#             else:
+#                 return "FALLING WEDGE (CONTRACTING)"
+    
+#     if slope1 > 0 and slope2 < 0:
+#         if abs(slope1) > abs(slope2):
+#             return "ASCENDING TRIANGLE (EXPANDING)"
+#         else:
+#             return "ASCENDING TRIANGLE (CONTRACTING)"
+#     elif slope1 < 0 and slope2 > 0:
+#         if abs(slope1) > abs(slope2):
+#             return "DESCENDING TRIANGLE (EXPANDING)"
+#         else:
+#             return "DESCENDING TRIANGLE (CONTRACTING)"
+#     else:
+#         if (slope1 > 0 and slope2 > 0) or (slope1 < 0 and slope2 < 0):
+#             return "CONVERGING TRIANGLE" if abs(slope1) > abs(slope2) else "DIVERGING TRIANGLE"
+    
+#     return "NONE"
+
+# def detect_auto_chart_pattern(symbol: str) -> Dict[str, str]:
+#     try:
+#         data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+#         if data.empty or len(data) < 50:
+#             return {"auto_pattern": "NONE", "auto_verdict": "HOLD"}
+        
+#         close_prices = data["Close"]
+#         pivot_indices, pivot_prices = detect_zigzag_pivots(close_prices)
+        
+#         if len(pivot_indices) < 5:
+#             return {"auto_pattern": "NONE", "auto_verdict": "HOLD"}
+        
+#         lines = detect_trend_lines(pivot_indices, pivot_prices)
+#         pattern = classify_auto_pattern(pivot_indices, pivot_prices, lines)
+        
+#         verdict = "HOLD"
+#         if "ASCENDING" in pattern or "RISING" in pattern:
+#             verdict = "BUY"
+#         elif "DESCENDING" in pattern or "FALLING" in pattern:
+#             verdict = "SELL"
+        
+#         return {"auto_pattern": pattern, "auto_verdict": verdict}
+#     except Exception as e:
+#         print(f"Error detecting auto pattern for {symbol}: {str(e)}")
+#         return {"auto_pattern": "NONE", "auto_verdict": "HOLD"}
+
+# # ==================== ALL CHART PATTERNS ====================
+# class PatternType(Enum):
+#     NONE = "NONE"
+#     ASCENDING_BROADENING = "ASCENDING_BROADENING"
+#     BROADENING = "BROADENING"
+#     DESCENDING_BROADENING = "DESCENDING_BROADENING"
+#     DOUBLE_BOTTOM = "DOUBLE_BOTTOM"
+#     DOUBLE_TOP = "DOUBLE_TOP"
+#     TRIPLE_BOTTOM = "TRIPLE_BOTTOM"
+#     TRIPLE_TOP = "TRIPLE_TOP"
+#     BEAR_ELLIOT = "BEAR_ELLIOT"
+#     BULL_ELLIOT = "BULL_ELLIOT"
+#     BEAR_ALT_FLAG = "BEAR_ALT_FLAG"
+#     BULL_ALT_FLAG = "BULL_ALT_FLAG"
+#     BEAR_FLAG = "BEAR_FLAG"
+#     BULL_FLAG = "BULL_FLAG"
+#     BEAR_ASC_HEAD_SHOULDERS = "BEAR_ASC_HEAD_SHOULDERS"
+#     BULL_ASC_HEAD_SHOULDERS = "BULL_ASC_HEAD_SHOULDERS"
+#     BEAR_DESC_HEAD_SHOULDERS = "BEAR_DESC_HEAD_SHOULDERS"
+#     BULL_DESC_HEAD_SHOULDERS = "BULL_DESC_HEAD_SHOULDERS"
+#     BEAR_HEAD_SHOULDERS = "BEAR_HEAD_SHOULDERS"
+#     BULL_HEAD_SHOULDERS = "BULL_HEAD_SHOULDERS"
+#     BEAR_PENNANT = "BEAR_PENNANT"
+#     BULL_PENNANT = "BULL_PENNANT"
+#     ASC_WEDGE = "ASC_WEDGE"
+#     DESC_WEDGE = "DESC_WEDGE"
+#     WEDGE = "WEDGE"
+
+# def detect_swing_points(prices: pd.Series, window: int = 5) -> Tuple[List[int], List[float], List[int], List[float]]:
+#     highs = prices.rolling(window=window, center=True).max()
+#     lows = prices.rolling(window=window, center=True).min()
+    
+#     swing_high_indices = []
+#     swing_high_prices = []
+#     swing_low_indices = []
+#     swing_low_prices = []
+    
+#     for i in range(window, len(prices)-window):
+#         if prices[i] == highs[i]:
+#             left = prices[i-window:i]
+#             right = prices[i+1:i+window+1]
+#             if all(prices[i] > left) and all(prices[i] > right):
+#                 swing_high_indices.append(i)
+#                 swing_high_prices.append(prices[i])
+#         elif prices[i] == lows[i]:
+#             left = prices[i-window:i]
+#             right = prices[i+1:i+window+1]
+#             if all(prices[i] < left) and all(prices[i] < right):
+#                 swing_low_indices.append(i)
+#                 swing_low_prices.append(prices[i])
+    
+#     return swing_high_indices, swing_high_prices, swing_low_indices, swing_low_prices
+
+# def detect_all_patterns(
+#     swing_high_indices: List[int], 
+#     swing_high_prices: List[float],
+#     swing_low_indices: List[int],
+#     swing_low_prices: List[float],
+#     ab_ratio: float = 100,
+#     bc_ratio: float = 30,
+#     be_ratio: float = 40,
+#     low_tol: float = 10,
+#     up_tol: float = 10
+# ) -> PatternType:
+#     if len(swing_high_indices) < 3 or len(swing_low_indices) < 3:
+#         return PatternType.NONE
+    
+#     # Double Top/Bottom
+#     if len(swing_high_indices) >= 2 and len(swing_low_indices) >= 1:
+#         h1, h2 = swing_high_prices[-1], swing_high_prices[-2]
+#         if abs(h1 - h2) / h2 * 100 <= up_tol:
+#             if swing_low_prices[-1] < (h1 + h2)/2:
+#                 return PatternType.DOUBLE_TOP
+    
+#     if len(swing_low_indices) >= 2 and len(swing_high_indices) >= 1:
+#         l1, l2 = swing_low_prices[-1], swing_low_prices[-2]
+#         if abs(l1 - l2) / l2 * 100 <= low_tol:
+#             if swing_high_prices[-1] > (l1 + l2)/2:
+#                 return PatternType.DOUBLE_BOTTOM
+    
+#     # Triple Top/Bottom
+#     if len(swing_high_indices) >= 3:
+#         highs = swing_high_prices[-3:]
+#         if all(abs(h - highs[0]) / highs[0] * 100 <= up_tol for h in highs):
+#             return PatternType.TRIPLE_TOP
+    
+#     if len(swing_low_indices) >= 3:
+#         lows = swing_low_prices[-3:]
+#         if all(abs(l - lows[0]) / lows[0] * 100 <= low_tol for l in lows):
+#             return PatternType.TRIPLE_BOTTOM
+    
+#     # Head and Shoulders
+#     if len(swing_high_indices) >= 3 and len(swing_low_indices) >= 2:
+#         highs = swing_high_prices[-3:]
+#         lows = swing_low_prices[-2:]
+        
+#         if highs[1] > highs[0] and highs[1] > highs[2] and lows[1] > lows[0]:
+#             return PatternType.BEAR_HEAD_SHOULDERS
+        
+#         if len(swing_low_indices) >= 3 and len(swing_high_indices) >= 2:
+#             lows = swing_low_prices[-3:]
+#             highs = swing_high_prices[-2:]
+#             if lows[1] < lows[0] and lows[1] < lows[2] and highs[1] < highs[0]:
+#                 return PatternType.BULL_HEAD_SHOULDERS
+    
+#     # Wedges
+#     if len(swing_high_indices) >= 2 and len(swing_low_indices) >= 2:
+#         high_slope = (swing_high_prices[-1] - swing_high_prices[-2]) / (swing_high_indices[-1] - swing_high_indices[-2])
+#         low_slope = (swing_low_prices[-1] - swing_low_prices[-2]) / (swing_low_indices[-1] - swing_low_indices[-2])
+        
+#         if high_slope > 0 and low_slope > 0:
+#             if abs(high_slope - low_slope) / max(high_slope, low_slope) * 100 <= 20:
+#                 return PatternType.ASCENDING_BROADENING
+#             else:
+#                 return PatternType.ASC_WEDGE
+#         elif high_slope < 0 and low_slope < 0:
+#             if abs(high_slope - low_slope) / max(abs(high_slope), abs(low_slope)) * 100 <= 20:
+#                 return PatternType.DESCENDING_BROADENING
+#             else:
+#                 return PatternType.DESC_WEDGE
+#         elif high_slope < 0 and low_slope > 0:
+#             return PatternType.WEDGE
+    
+#     # Flags and pennants
+#     if len(swing_high_indices) >= 2 and len(swing_low_indices) >= 2:
+#         initial_move = swing_high_prices[-2] - swing_low_prices[-2]
+#         consolidation_range = swing_high_prices[-1] - swing_low_prices[-1]
+        
+#         if consolidation_range / initial_move * 100 <= bc_ratio:
+#             if swing_high_prices[-1] < swing_high_prices[-2] and swing_low_prices[-1] > swing_low_prices[-2]:
+#                 return PatternType.BULL_FLAG
+#             elif swing_high_prices[-1] > swing_high_prices[-2] and swing_low_prices[-1] < swing_low_prices[-2]:
+#                 return PatternType.BEAR_FLAG
+    
+#     return PatternType.NONE
+
+# def get_pattern_verdict(pattern: PatternType) -> str:
+#     bullish_patterns = [
+#         PatternType.DOUBLE_BOTTOM,
+#         PatternType.TRIPLE_BOTTOM,
+#         PatternType.BULL_ELLIOT,
+#         PatternType.BULL_ALT_FLAG,
+#         PatternType.BULL_FLAG,
+#         PatternType.BULL_ASC_HEAD_SHOULDERS,
+#         PatternType.BULL_DESC_HEAD_SHOULDERS,
+#         PatternType.BULL_HEAD_SHOULDERS,
+#         PatternType.BULL_PENNANT
+#     ]
+    
+#     bearish_patterns = [
+#         PatternType.DOUBLE_TOP,
+#         PatternType.TRIPLE_TOP,
+#         PatternType.BEAR_ELLIOT,
+#         PatternType.BEAR_ALT_FLAG,
+#         PatternType.BEAR_FLAG,
+#         PatternType.BEAR_ASC_HEAD_SHOULDERS,
+#         PatternType.BEAR_DESC_HEAD_SHOULDERS,
+#         PatternType.BEAR_HEAD_SHOULDERS,
+#         PatternType.BEAR_PENNANT
+#     ]
+    
+#     if pattern in bullish_patterns:
+#         return "BUY"
+#     elif pattern in bearish_patterns:
+#         return "SELL"
+#     else:
+#         return "HOLD"
+
+# def detect_all_chart_patterns(symbol: str) -> Dict[str, str]:
+#     try:
+#         data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+#         if data.empty or len(data) < 50:
+#             return {"all_pattern": "NONE", "all_verdict": "HOLD"}
+        
+#         close_prices = data["Close"]
+#         high_prices = data["High"]
+#         low_prices = data["Low"]
+        
+#         swing_high_indices, swing_high_prices, swing_low_indices, swing_low_prices = detect_swing_points(close_prices)
+        
+#         if len(swing_high_indices) < 2 or len(swing_low_indices) < 2:
+#             return {"all_pattern": "NONE", "all_verdict": "HOLD"}
+        
+#         pattern = detect_all_patterns(
+#             swing_high_indices, swing_high_prices,
+#             swing_low_indices, swing_low_prices
+#         )
+        
+#         verdict = get_pattern_verdict(pattern)
+        
+#         return {
+#             "all_pattern": pattern.value,
+#             "all_verdict": verdict
+#         }
+#     except Exception as e:
+#         print(f"Error detecting all patterns for {symbol}: {str(e)}")
+#         return {"all_pattern": "NONE", "all_verdict": "HOLD"}
+
+# # ==================== CYCLES ANALYSIS ====================
+# def detect_market_cycles(symbol: str) -> Dict[str, str]:
+#     try:
+#         data = yf.download(symbol, period="2y", interval="1d", progress=False)
+#         if data.empty or len(data) < 100:
+#             return {"cycle": "NONE", "cycle_verdict": "HOLD"}
+        
+#         close_prices = data["Close"]
+        
+#         # Calculate moving averages for cycle detection
+#         short_ma = close_prices.rolling(window=20).mean()
+#         long_ma = close_prices.rolling(window=50).mean()
+        
+#         # Determine current market phase
+#         current_price = close_prices.iloc[-1]
+#         short_ma_val = short_ma.iloc[-1]
+#         long_ma_val = long_ma.iloc[-1]
+        
+#         # Bullish cycle (short MA above long MA and price above both)
+#         if current_price > short_ma_val and short_ma_val > long_ma_val:
+#             return {"cycle": "BULLISH", "cycle_verdict": "BUY"}
+        
+#         # Bearish cycle (short MA below long MA and price below both)
+#         elif current_price < short_ma_val and short_ma_val < long_ma_val:
+#             return {"cycle": "BEARISH", "cycle_verdict": "SELL"}
+        
+#         # Accumulation phase (price crossing above MAs)
+#         elif current_price > short_ma_val and current_price > long_ma_val and short_ma_val < long_ma_val:
+#             return {"cycle": "ACCUMULATION", "cycle_verdict": "BUY"}
+        
+#         # Distribution phase (price crossing below MAs)
+#         elif current_price < short_ma_val and current_price < long_ma_val and short_ma_val > long_ma_val:
+#             return {"cycle": "DISTRIBUTION", "cycle_verdict": "SELL"}
+        
+#         # Neutral/consolidation phase
+#         else:
+#             return {"cycle": "CONSOLIDATION", "cycle_verdict": "HOLD"}
+            
+#     except Exception as e:
+#         print(f"Error detecting cycles for {symbol}: {str(e)}")
+#         return {"cycle": "NONE", "cycle_verdict": "HOLD"}
+
+# # ==================== MAIN API ENDPOINT ====================
+# @app.get("/analyze")
+# async def analyze():
+#     stock_list = [
+#         "AAPL", "GOOGL", "MSFT", "TSLA", "AMZN",
+#         "NVDA", "META", "NFLX", "BABA", "AMD",
+#         "INTC", "UBER", "SHOP", "PYPL", "PEP",
+#         "KO", "DIS", "NKE", "WMT", "CRM"
+#     ]
+#     results = []
+
+#     for symbol in stock_list:
+#         # Get all indicators
+#         macd = get_macd_signal(symbol)
+#         elliott = detect_elliott_wave(symbol)
+#         auto_pattern = detect_auto_chart_pattern(symbol)
+#         all_pattern = detect_all_chart_patterns(symbol)
+#         cycle_analysis = detect_market_cycles(symbol)
+
+#         stock_data = {
+#             "symbol": symbol,
+#             "price": macd["price"],
+#             # MACD data
+#             "macd_signal": macd["signal"],
+#             # Elliott Wave data
+#             "elliott_wave": elliott["elliott_wave"],
+#             "wave_verdict": elliott["wave_verdict"],
+#             # Auto Chart Patterns data
+#             "auto_chart_pattern": auto_pattern["auto_pattern"],
+#             "auto_pattern_verdict": auto_pattern["auto_verdict"],
+#             # All Chart Patterns data
+#             "all_chart_pattern": all_pattern["all_pattern"],
+#             "all_pattern_verdict": all_pattern["all_verdict"],
+#             # Cycles Analysis data
+#             "market_cycle": cycle_analysis["cycle"],
+#             "cycle_verdict": cycle_analysis["cycle_verdict"]
+#         }
+
+#         results.append(stock_data)
+
+#     return JSONResponse(content=results)
+
