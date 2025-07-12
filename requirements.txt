@@ -13,4 +13,4 @@ python-dotenv==1.0.0
 yfinance==0.2.18
 scipy
 scikit-learn
-
+gunicorn
