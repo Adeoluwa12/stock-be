@@ -1,0 +1,1143 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © theEccentricTrader & Merged by Oluwaferanmi
+//@version=6
+
+indicator("Merged Technical Indicators [Oluwaferanmi]", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 100, max_polylines_count = 100)
+
+//==============================================================================
+//                          COMMON SETTINGS
+//==============================================================================
+
+// General Settings
+group_general = "General Settings"
+show_retracement = input.bool(true, "Show Retracement Ratios", group=group_general)
+show_macd_divergence = input.bool(true, "Show MACD Divergence", group=group_general)
+show_auto_chart = input.bool(true, "Show Auto Chart Patterns", group=group_general)
+show_elliott_wave = input.bool(true, "Show Elliott Wave", group=group_general)
+show_all_chart = input.bool(true, "Show All Chart Patterns", group=group_general)
+show_cycles = input.bool(true, "Show Cycles Analysis", group=group_general)
+
+//==============================================================================
+//                          RETRACEMENT RATIOS
+//==============================================================================
+
+if show_retracement
+    // Retracement Settings
+    group_retracement = "Retracement Settings"
+    retracement_label_color = input.color(color.blue, "Label Color", group=group_retracement)
+
+    // SHSL Logic
+    shPrice = close[1] >= open[1] and close < open and high >= high[1] and barstate.isconfirmed ? high : 
+     close[1] >= open[1] and close < open and high <= high[1] and barstate.isconfirmed ? high[1] : na
+    slPrice = close[1] < open[1] and close >= open and low <= low[1] and barstate.isconfirmed ? low : 
+     close[1] < open[1] and close >= open and low >= low[1] and barstate.isconfirmed ? low[1] : na
+
+    shPriceBarIndex = close[1] >= open[1] and close < open and high >= high[1] and barstate.isconfirmed ? bar_index : 
+     close[1] >= open[1] and close < open and high <= high[1] and barstate.isconfirmed ? bar_index - 1 : na
+    slPriceBarIndex = close[1] < open[1] and close >= open and low <= low[1] and barstate.isconfirmed ? bar_index : 
+     close[1] < open[1] and close >= open and low >= low[1] and barstate.isconfirmed ? bar_index - 1 : na
+
+    peak = ta.valuewhen(shPrice, shPrice, 0)
+    trough = ta.valuewhen(slPrice, slPrice, 0)
+
+    slRangeRatio = (peak - trough) / (peak - trough[1]) * 100
+    shRangeRatio = (peak - trough) / (peak[1] - trough) * 100
+
+    // Labels
+    if shPrice
+        shRanegRatioLabel = label.new(shPriceBarIndex, shPrice, yloc = yloc.price, color = color.rgb(54, 58, 69, 100), style = label.style_label_down, 
+         textcolor = retracement_label_color, text = str.tostring(math.round(shRangeRatio, 2)))
+        var myLabelArray = array.new_label()
+        array.push(myLabelArray, shRanegRatioLabel) 
+        if array.size(myLabelArray) >= 250
+            firstLabel = array.remove(myLabelArray, 0) 
+            label.delete(firstLabel)
+
+    if slPrice
+        slRanegRatioLabel = label.new(slPriceBarIndex, slPrice, yloc = yloc.price, color = color.rgb(54, 58, 69, 100), style = label.style_label_up, 
+         textcolor = retracement_label_color, text = str.tostring(math.round(slRangeRatio, 2)))
+        var myLabelArray = array.new_label()
+        array.push(myLabelArray, slRanegRatioLabel)
+        if array.size(myLabelArray) >= 250
+            firstLabel = array.remove(myLabelArray, 0) 
+            label.delete(firstLabel)
+
+//==============================================================================
+//                          MACD DIVERGENCE
+//==============================================================================
+
+if show_macd_divergence
+    // MACD Settings
+    group_macd = "MACD Settings"
+    fastEMA = input.int(12, "Fast EMA", group=group_macd)
+    slowEMA = input.int(26, "Slow EMA", group=group_macd)
+    signalSMA = input.int(9, "Signal SMA", group=group_macd)
+    drawIndicatorTrendLines = input.bool(true, "Draw Indicator Trend Lines", group=group_macd)
+    drawPriceTrendLines = input.bool(true, "Draw Price Trend Lines", group=group_macd)
+    displayAlert = input.bool(false, "Display Alert", group=group_macd)
+
+    // MACD Calculation
+    [macdLine, signalLine, _] = ta.macd(close, fastEMA, slowEMA, signalSMA)
+    
+    // Divergence Detection Functions
+    isIndicatorPeak(idx) =>
+        macdLine[idx] >= macdLine[idx+1] and macdLine[idx] > macdLine[idx+2] and macdLine[idx] > macdLine[idx-1]
+    
+    isIndicatorTrough(idx) =>
+        macdLine[idx] <= macdLine[idx+1] and macdLine[idx] < macdLine[idx+2] and macdLine[idx] < macdLine[idx-1]
+    
+    // Find last peak/trough
+    findLastPeak(startIdx) =>
+        int result = na
+        for i = startIdx + 5 to startIdx + 50
+            if i < bar_index
+                if signalLine[i] >= signalLine[i+1] and signalLine[i] >= signalLine[i+2] and
+                   signalLine[i] >= signalLine[i-1] and signalLine[i] >= signalLine[i-2]
+                    for j = i to i + 20
+                        if j < bar_index
+                            if macdLine[j] >= macdLine[j+1] and macdLine[j] > macdLine[j+2] and
+                               macdLine[j] >= macdLine[j-1] and macdLine[j] > macdLine[j-2]
+                                result := j
+                                break
+                    if not na(result)
+                        break
+        result
+    
+    findLastTrough(startIdx) =>
+        int result = na
+        for i = startIdx + 5 to startIdx + 50
+            if i < bar_index
+                if signalLine[i] <= signalLine[i+1] and signalLine[i] <= signalLine[i+2] and
+                   signalLine[i] <= signalLine[i-1] and signalLine[i] <= signalLine[i-2]
+                    for j = i to i + 20
+                        if j < bar_index
+                            if macdLine[j] <= macdLine[j+1] and macdLine[j] < macdLine[j+2] and
+                               macdLine[j] <= macdLine[j-1] and macdLine[j] < macdLine[j-2]
+                                result := j
+                                break
+                    if not na(result)
+                        break
+        result
+    
+    // Draw trend lines
+    drawPriceTrendLine(x1, x2, y1, y2, lineColor, style) =>
+        if drawPriceTrendLines
+            var line id = line.new(x1, y1, x2, y2, color=lineColor, style=style)
+            line.set_xy1(id, x1, y1)
+            line.set_xy2(id, x2, y2)
+            line.set_color(id, lineColor)
+            line.set_style(id, style)
+    
+    drawIndicatorTrendLine(x1, x2, y1, y2, lineColor, style) =>
+        if drawIndicatorTrendLines
+            var line id = line.new(x1, y1, x2, y2, color=lineColor, style=style)
+            line.set_xy1(id, x1, y1)
+            line.set_xy2(id, x2, y2)
+            line.set_color(id, lineColor)
+            line.set_style(id, style)
+    
+    // Detect divergences
+    if isIndicatorTrough(2)
+        currentTrough = 2
+        lastTrough = findLastTrough(currentTrough)
+        
+        if not na(lastTrough)
+            // Bullish divergence
+            if macdLine[currentTrough] > macdLine[lastTrough] and low[currentTrough] < low[lastTrough]
+                drawPriceTrendLine(bar_index - currentTrough, bar_index - lastTrough, 
+                                  low[currentTrough], low[lastTrough], color.green, line.style_solid)
+                drawIndicatorTrendLine(bar_index - currentTrough, bar_index - lastTrough, 
+                                      macdLine[currentTrough], macdLine[lastTrough], color.green, line.style_solid)
+                if displayAlert
+                    alert("Classical bullish divergence detected")
+            
+            // Reverse bullish divergence
+            if macdLine[currentTrough] < macdLine[lastTrough] and low[currentTrough] > low[lastTrough]
+                drawPriceTrendLine(bar_index - currentTrough, bar_index - lastTrough, 
+                                  low[currentTrough], low[lastTrough], color.green, line.style_dotted)
+                drawIndicatorTrendLine(bar_index - currentTrough, bar_index - lastTrough, 
+                                      macdLine[currentTrough], macdLine[lastTrough], color.green, line.style_dotted)
+                if displayAlert
+                    alert("Reverse bullish divergence detected")
+    
+    if isIndicatorPeak(2)
+        currentPeak = 2
+        lastPeak = findLastPeak(currentPeak)
+        
+        if not na(lastPeak)
+            // Bearish divergence
+            if macdLine[currentPeak] < macdLine[lastPeak] and high[currentPeak] > high[lastPeak]
+                drawPriceTrendLine(bar_index - currentPeak, bar_index - lastPeak, 
+                                  high[currentPeak], high[lastPeak], color.red, line.style_solid)
+                drawIndicatorTrendLine(bar_index - currentPeak, bar_index - lastPeak, 
+                                      macdLine[currentPeak], macdLine[lastPeak], color.red, line.style_solid)
+                if displayAlert
+                    alert("Classical bearish divergence detected")
+            
+            // Reverse bearish divergence
+            if macdLine[currentPeak] > macdLine[lastPeak] and high[currentPeak] < high[lastPeak]
+                drawPriceTrendLine(bar_index - currentPeak, bar_index - lastPeak, 
+                                  high[currentPeak], high[lastPeak], color.red, line.style_dotted)
+                drawIndicatorTrendLine(bar_index - currentPeak, bar_index - lastPeak, 
+                                      macdLine[currentPeak], macdLine[lastPeak], color.red, line.style_dotted)
+                if displayAlert
+                    alert("Reverse bearish divergence detected")
+
+//==============================================================================
+//                          AUTO CHART PATTERNS
+//==============================================================================
+
+if show_auto_chart
+    // Auto Chart Settings
+    group_autochart = "Auto Chart Patterns Settings"
+    zigzagLength = input.int(8, "Zigzag Length", minval=1, group=group_autochart)
+    depth = input.int(55, "Depth", maxval=500, group=group_autochart)
+    errorThreshold = input.float(20.0, "Error Threshold", 0.0, 100, group=group_autochart)
+    flatThreshold = input.float(20.0, "Flat Threshold", 0.0, 30, group=group_autochart)
+    
+    // Pattern Groups
+    allowChannels = input.bool(true, "Channels", group=group_autochart, inline="g1")
+    allowWedges = input.bool(true, "Wedges", group=group_autochart, inline="g1")
+    allowTriangles = input.bool(true, "Triangles", group=group_autochart, inline="g1")
+    
+    // Direction Groups
+    allowRisingPatterns = input.bool(true, "Rising", group=group_autochart, inline="d1")
+    allowFallingPatterns = input.bool(true, "Falling", group=group_autochart, inline="d1")
+    allowNonDirectionalPatterns = input.bool(true, "Flat/Bi-Directional", group=group_autochart, inline="d1")
+    
+    // Formation Dynamics
+    allowExpandingPatterns = input.bool(true, "Expanding", group=group_autochart, inline="f1")
+    allowContractingPatterns = input.bool(true, "Contracting", group=group_autochart, inline="f1")
+    allowParallelChannels = input.bool(true, "Parallel", group=group_autochart, inline="f1")
+    
+    // Simplified zigzag implementation
+    var float[] zigzagHighs = array.new_float(0)
+    var float[] zigzagLows = array.new_float(0)
+    var int[] zigzagHighIdxs = array.new_int(0)
+    var int[] zigzagLowIdxs = array.new_int(0)
+    
+    // Detect pivot points
+    ph = ta.pivothigh(high, zigzagLength, zigzagLength)
+    pl = ta.pivotlow(low, zigzagLength, zigzagLength)
+    
+    if not na(ph)
+        array.push(zigzagHighs, ph)
+        array.push(zigzagHighIdxs, bar_index - zigzagLength)
+        if array.size(zigzagHighs) > depth
+            array.shift(zigzagHighs)
+            array.shift(zigzagHighIdxs)
+    
+    if not na(pl)
+        array.push(zigzagLows, pl)
+        array.push(zigzagLowIdxs, bar_index - zigzagLength)
+        if array.size(zigzagLows) > depth
+            array.shift(zigzagLows)
+            array.shift(zigzagLowIdxs)
+    
+    // Pattern detection (simplified)
+    detectChannel() =>
+        bool result = false
+        if array.size(zigzagHighs) >= 2 and array.size(zigzagLows) >= 2
+            h1 = array.get(zigzagHighs, array.size(zigzagHighs) - 1)
+            h2 = array.get(zigzagHighs, array.size(zigzagHighs) - 2)
+            l1 = array.get(zigzagLows, array.size(zigzagLows) - 1)
+            l2 = array.get(zigzagLows, array.size(zigzagLows) - 2)
+            
+            h1Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 1)
+            h2Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 2)
+            l1Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 1)
+            l2Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 2)
+            
+            // Check if lines are roughly parallel
+            highSlope = (h1 - h2) / (h1Idx - h2Idx)
+            lowSlope = (l1 - l2) / (l1Idx - l2Idx)
+            
+            slopeDiff = math.abs(highSlope - lowSlope) / math.max(math.abs(highSlope), math.abs(lowSlope)) * 100
+            
+            if slopeDiff < errorThreshold
+                // Determine channel type
+                if math.abs(highSlope) < flatThreshold and math.abs(lowSlope) < flatThreshold
+                    if allowNonDirectionalPatterns and allowParallelChannels and allowChannels
+                        result := true
+                else if highSlope > 0 and lowSlope > 0
+                    if allowRisingPatterns and allowParallelChannels and allowChannels
+                        result := true
+                else if highSlope < 0 and lowSlope < 0
+                    if allowFallingPatterns and allowParallelChannels and allowChannels
+                        result := true
+        result
+    
+    detectWedge() =>
+        bool result = false
+        if array.size(zigzagHighs) >= 2 and array.size(zigzagLows) >= 2
+            h1 = array.get(zigzagHighs, array.size(zigzagHighs) - 1)
+            h2 = array.get(zigzagHighs, array.size(zigzagHighs) - 2)
+            l1 = array.get(zigzagLows, array.size(zigzagLows) - 1)
+            l2 = array.get(zigzagLows, array.size(zigzagLows) - 2)
+            
+            h1Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 1)
+            h2Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 2)
+            l1Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 1)
+            l2Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 2)
+            
+            // Check if lines are converging or diverging
+            highSlope = (h1 - h2) / (h1Idx - h2Idx)
+            lowSlope = (l1 - l2) / (l1Idx - l2Idx)
+            
+            // Determine wedge type
+            if highSlope > 0 and lowSlope > 0
+                if highSlope > lowSlope
+                    if allowRisingPatterns and allowContractingPatterns and allowWedges
+                        result := true
+                else if highSlope < lowSlope
+                    if allowRisingPatterns and allowExpandingPatterns and allowWedges
+                        result := true
+            else if highSlope < 0 and lowSlope < 0
+                if highSlope < lowSlope
+                    if allowFallingPatterns and allowContractingPatterns and allowWedges
+                        result := true
+                else if highSlope > lowSlope
+                    if allowFallingPatterns and allowExpandingPatterns and allowWedges
+                        result := true
+        result
+    
+    detectTriangle() =>
+        bool result = false
+        if array.size(zigzagHighs) >= 2 and array.size(zigzagLows) >= 2
+            h1 = array.get(zigzagHighs, array.size(zigzagHighs) - 1)
+            h2 = array.get(zigzagHighs, array.size(zigzagHighs) - 2)
+            l1 = array.get(zigzagLows, array.size(zigzagLows) - 1)
+            l2 = array.get(zigzagLows, array.size(zigzagLows) - 2)
+            
+            h1Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 1)
+            h2Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 2)
+            l1Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 1)
+            l2Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 2)
+            
+            // Check if lines are converging or diverging
+            highSlope = (h1 - h2) / (h1Idx - h2Idx)
+            lowSlope = (l1 - l2) / (l1Idx - l2Idx)
+            
+            // Determine triangle type
+            if highSlope < 0 and lowSlope > 0
+                if allowNonDirectionalPatterns and allowContractingPatterns and allowTriangles
+                    result := true
+            else if highSlope > 0 and lowSlope < 0
+                if allowNonDirectionalPatterns and allowExpandingPatterns and allowTriangles
+                    result := true
+            else if math.abs(highSlope) < flatThreshold and lowSlope > 0
+                if allowRisingPatterns and allowContractingPatterns and allowTriangles
+                    result := true
+            else if math.abs(highSlope) < flatThreshold and lowSlope < 0
+                if allowRisingPatterns and allowExpandingPatterns and allowTriangles
+                    result := true
+            else if highSlope < 0 and math.abs(lowSlope) < flatThreshold
+                if allowFallingPatterns and allowContractingPatterns and allowTriangles
+                    result := true
+            else if highSlope > 0 and math.abs(lowSlope) < flatThreshold
+                if allowFallingPatterns and allowExpandingPatterns and allowTriangles
+                    result := true
+        result
+    
+    // Draw patterns
+    drawPattern() =>
+        if array.size(zigzagHighs) >= 2 and array.size(zigzagLows) >= 2
+            h1 = array.get(zigzagHighs, array.size(zigzagHighs) - 1)
+            h2 = array.get(zigzagHighs, array.size(zigzagHighs) - 2)
+            l1 = array.get(zigzagLows, array.size(zigzagLows) - 1)
+            l2 = array.get(zigzagLows, array.size(zigzagLows) - 2)
+            
+            h1Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 1)
+            h2Idx = array.get(zigzagHighIdxs, array.size(zigzagHighIdxs) - 2)
+            l1Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 1)
+            l2Idx = array.get(zigzagLowIdxs, array.size(zigzagLowIdxs) - 2)
+            
+            // Draw high line
+            var line highLine = line.new(h2Idx, h2, h1Idx, h1, color=color.blue, width=2)
+            line.set_xy1(highLine, h2Idx, h2)
+            line.set_xy2(highLine, h1Idx, h1)
+            
+            // Draw low line
+            var line lowLine = line.new(l2Idx, l2, l1Idx, l1, color=color.blue, width=2)
+            line.set_xy1(lowLine, l2Idx, l2)
+            line.set_xy2(lowLine, l1Idx, l1)
+            
+            // Extend lines to current bar
+            var line highExtend = line.new(h1Idx, h1, bar_index, h1 + (bar_index - h1Idx) * (h1 - h2) / (h1Idx - h2Idx), color=color.blue, style=line.style_dashed)
+            line.set_xy1(highExtend, h1Idx, h1)
+            line.set_xy2(highExtend, bar_index, h1 + (bar_index - h1Idx) * (h1 - h2) / (h1Idx - h2Idx))
+            
+            var line lowExtend = line.new(l1Idx, l1, bar_index, l1 + (bar_index - l1Idx) * (l1 - l2) / (l1Idx - l2Idx), color=color.blue, style=line.style_dashed)
+            line.set_xy1(lowExtend, l1Idx, l1)
+            line.set_xy2(lowExtend, bar_index, l1 + (bar_index - l1Idx) * (l1 - l2) / (l1Idx - l2Idx))
+    
+    // Detect and draw patterns
+    if detectChannel() or detectWedge() or detectTriangle()
+        drawPattern()
+
+//==============================================================================
+//                          ELLIOTT WAVE
+//==============================================================================
+
+if show_elliott_wave
+    // Elliott Wave Settings
+    group_elliott = "Elliott Wave Settings"
+    ew_hi = input.string('high', '', group=group_elliott, inline='hl', options=['high', 'close', 'max open/close'])
+    ew_lo = input.string('low', '', group=group_elliott, inline='hl', options=['low', 'close', 'min open/close'])
+    
+    ew_s1 = input.bool(true, '', group=group_elliott, inline='1')
+    ew_len1 = input.int(4, '1 Length', group=group_elliott, inline='1', minval=1)
+    ew_col1 = input.color(color.red, '', group=group_elliott, inline='1')
+    
+    ew_s2 = input.bool(true, '', group=group_elliott, inline='2')
+    ew_len2 = input.int(8, '2 Length', group=group_elliott, inline='2', minval=1)
+    ew_col2 = input.color(color.blue, '', group=group_elliott, inline='2')
+    
+    ew_s3 = input.bool(true, '', group=group_elliott, inline='3')
+    ew_len3 = input.int(16, '3 Length', group=group_elliott, inline='3', minval=1)
+    ew_col3 = input.color(color.white, '', group=group_elliott, inline='3')
+    
+    ew_fib1 = input.float(0.500, 'level 1', group=group_elliott, minval=0, maxval=1, step=0.01)
+    ew_fib2 = input.float(0.618, 'level 2', group=group_elliott, minval=0, maxval=1, step=0.01)
+    ew_fib3 = input.float(0.764, 'level 3', group=group_elliott, minval=0, maxval=1, step=0.01)
+    ew_fib4 = input.float(0.854, 'level 4', group=group_elliott, minval=0, maxval=1, step=0.01)
+    
+    // Elliott Wave Implementation
+    ew_high = ew_hi == 'high' ? high : ew_hi == 'close' ? close : math.max(open, close)
+    ew_low = ew_lo == 'low' ? low : ew_lo == 'close' ? close : math.min(open, close)
+    
+    // Function to detect Elliott Wave patterns
+    detectElliotWave(length, col) =>
+        var line[] lines = array.new_line(5)
+        var label[] labels = array.new_label(5)
+        var bool initialized = false
+        
+        if not initialized
+            for i = 0 to 4
+                array.push(lines, line.new(na, na, na, na, color=col, width=2))
+                array.push(labels, label.new(na, na, text="", color=color.rgb(54, 58, 69, 100), style=label.style_none, textcolor=col))
+            initialized := true
+        
+        // Detect pivots
+        ph = ta.pivothigh(ew_high, length, length)
+        pl = ta.pivotlow(ew_low, length, length)
+        
+        // Store pivot points
+        var float[] highPivots = array.new_float(0)
+        var float[] lowPivots = array.new_float(0)
+        var int[] highIdxs = array.new_int(0)
+        var int[] lowIdxs = array.new_int(0)
+        
+        if not na(ph)
+            array.push(highPivots, ph)
+            array.push(highIdxs, bar_index - length)
+            if array.size(highPivots) > 10
+                array.shift(highPivots)
+                array.shift(highIdxs)
+        
+        if not na(pl)
+            array.push(lowPivots, pl)
+            array.push(lowIdxs, bar_index - length)
+            if array.size(lowPivots) > 10
+                array.shift(lowPivots)
+                array.shift(lowIdxs)
+        
+        // Check for 5-wave pattern
+        if array.size(highPivots) >= 3 and array.size(lowPivots) >= 2
+            // Get the last 3 highs and 2 lows
+            h1 = array.get(highPivots, array.size(highPivots) - 1)
+            h2 = array.get(highPivots, array.size(highPivots) - 2)
+            h3 = array.get(highPivots, array.size(highPivots) - 3)
+            l1 = array.get(lowPivots, array.size(lowPivots) - 1)
+            l2 = array.get(lowPivots, array.size(lowPivots) - 2)
+            
+            h1Idx = array.get(highIdxs, array.size(highIdxs) - 1)
+            h2Idx = array.get(highIdxs, array.size(highIdxs) - 2)
+            h3Idx = array.get(highIdxs, array.size(highIdxs) - 3)
+            l1Idx = array.get(lowIdxs, array.size(lowIdxs) - 1)
+            l2Idx = array.get(lowIdxs, array.size(lowIdxs) - 2)
+            
+            // Check if it's a valid Elliott Wave pattern
+            if h1 > h2 and h2 < h3 and l1 > l2 and h1Idx > l1Idx and l1Idx > h2Idx and h2Idx > l2Idx and l2Idx > h3Idx
+                // Draw the Elliott Wave pattern
+                line.set_xy1(array.get(lines, 0), h3Idx, h3)
+                line.set_xy2(array.get(lines, 0), l2Idx, l2)
+                
+                line.set_xy1(array.get(lines, 1), l2Idx, l2)
+                line.set_xy2(array.get(lines, 1), h2Idx, h2)
+                
+                line.set_xy1(array.get(lines, 2), h2Idx, h2)
+                line.set_xy2(array.get(lines, 2), l1Idx, l1)
+                
+                line.set_xy1(array.get(lines, 3), l1Idx, l1)
+                line.set_xy2(array.get(lines, 3), h1Idx, h1)
+                
+                line.set_xy1(array.get(lines, 4), h1Idx, h1)
+                line.set_xy2(array.get(lines, 4), bar_index, close)
+                
+                // Add labels
+                label.set_xy(array.get(labels, 0), h3Idx, h3)
+                label.set_text(array.get(labels, 0), "1")
+                label.set_style(array.get(labels, 0), label.style_label_down)
+                
+                label.set_xy(array.get(labels, 1), l2Idx, l2)
+                label.set_text(array.get(labels, 1), "2")
+                label.set_style(array.get(labels, 1), label.style_label_up)
+                
+                label.set_xy(array.get(labels, 2), h2Idx, h2)
+                label.set_text(array.get(labels, 2), "3")
+                label.set_style(array.get(labels, 2), label.style_label_down)
+                
+                label.set_xy(array.get(labels, 3), l1Idx, l1)
+                label.set_text(array.get(labels, 3), "4")
+                label.set_style(array.get(labels, 3), label.style_label_up)
+                
+                label.set_xy(array.get(labels, 4), h1Idx, h1)
+                label.set_text(array.get(labels, 4), "5")
+                label.set_style(array.get(labels, 4), label.style_label_down)
+                
+                // Draw Fibonacci retracement levels
+                var line[] fibLines = array.new_line(4)
+                var bool fibInitialized = false
+                
+                if not fibInitialized
+                    for i = 0 to 3
+                        array.push(fibLines, line.new(na, na, na, na, color=color.new(col, 50), style=line.style_dashed))
+                    fibInitialized := true
+                
+                // Calculate Fibonacci levels
+                diff = h1 - l2
+                fib1 = h1 - diff * ew_fib1
+                fib2 = h1 - diff * ew_fib2
+                fib3 = h1 - diff * ew_fib3
+                fib4 = h1 - diff * ew_fib4
+                
+                // Draw Fibonacci lines
+                line.set_xy1(array.get(fibLines, 0), h1Idx, fib1)
+                line.set_xy2(array.get(fibLines, 0), bar_index, fib1)
+                
+                line.set_xy1(array.get(fibLines, 1), h1Idx, fib2)
+                line.set_xy2(array.get(fibLines, 1), bar_index, fib2)
+                
+                line.set_xy1(array.get(fibLines, 2), h1Idx, fib3)
+                line.set_xy2(array.get(fibLines, 2), bar_index, fib3)
+                
+                line.set_xy1(array.get(fibLines, 3), h1Idx, fib4)
+                line.set_xy2(array.get(fibLines, 3), bar_index, fib4)
+    
+    // Apply Elliott Wave detection for each length
+    if ew_s1
+        detectElliotWave(ew_len1, ew_col1)
+    
+    if ew_s2
+        detectElliotWave(ew_len2, ew_col2)
+    
+    if ew_s3
+        detectElliotWave(ew_len3, ew_col3)
+
+//==============================================================================
+//                          ALL CHART PATTERNS
+//==============================================================================
+
+if show_all_chart
+    // All Chart Patterns Settings
+    group_allchart = "All Chart Patterns Settings"
+    bear_pattern_colour = input.color(color.red, 'Bearish Pattern Colour', group=group_allchart)
+    bull_pattern_colour = input.color(color.green, 'Bullish Pattern Colour', group=group_allchart)
+    neutral_pattern_colour = input.color(color.blue, 'Neutral Pattern Colour', group=group_allchart)
+    dot_colour = input.color(color.blue, 'Dotted Line Colour', group=group_allchart)
+    
+    // Pattern Selection
+    show_double_bot = input.bool(true, 'Show Double Bottom', group=group_allchart)
+    show_double_top = input.bool(true, 'Show Double Top', group=group_allchart)
+    show_triple_bot = input.bool(true, 'Show Triple Bottom', group=group_allchart)
+    show_triple_top = input.bool(true, 'Show Triple Top', group=group_allchart)
+    show_head_shoulders = input.bool(true, 'Show Head and Shoulders', group=group_allchart)
+    show_inv_head_shoulders = input.bool(true, 'Show Inv. Head and Shoulders', group=group_allchart)
+    
+    // Pattern Parameters
+    low_tol = input.float(10, 'Lower Tolerance (%)', group=group_allchart)
+    up_tol = input.float(10, 'Upper Tolerance (%)', group=group_allchart)
+    
+    // Swing High/Low Detection
+    swingLength = 5
+    
+    // Detect swing highs and lows
+    swingHigh = ta.pivothigh(high, swingLength, swingLength)
+    swingLow = ta.pivotlow(low, swingLength, swingLength)
+    
+    // Store swing points
+    var float[] swingHighs = array.new_float(0)
+    var float[] swingLows = array.new_float(0)
+    var int[] swingHighIdxs = array.new_int(0)
+    var int[] swingLowIdxs = array.new_int(0)
+    
+    if not na(swingHigh)
+        array.push(swingHighs, swingHigh)
+        array.push(swingHighIdxs, bar_index - swingLength)
+        if array.size(swingHighs) > 10
+            array.shift(swingHighs)
+            array.shift(swingHighIdxs)
+    
+    if not na(swingLow)
+        array.push(swingLows, swingLow)
+        array.push(swingLowIdxs, bar_index - swingLength)
+        if array.size(swingLows) > 10
+            array.shift(swingLows)
+            array.shift(swingLowIdxs)
+    
+    // Pattern detection functions
+    isDoubleBottom() =>
+        bool result = false
+        if array.size(swingLows) >= 2
+            l1 = array.get(swingLows, array.size(swingLows) - 1)
+            l2 = array.get(swingLows, array.size(swingLows) - 2)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            
+            // Check if the two lows are at similar levels
+            priceDiff = math.abs(l1 - l2) / l1 * 100
+            if priceDiff <= low_tol
+                result := true
+        result
+    
+    isDoubleTop() =>
+        bool result = false
+        if array.size(swingHighs) >= 2
+            h1 = array.get(swingHighs, array.size(swingHighs) - 1)
+            h2 = array.get(swingHighs, array.size(swingHighs) - 2)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            
+            // Check if the two highs are at similar levels
+            priceDiff = math.abs(h1 - h2) / h1 * 100
+            if priceDiff <= up_tol
+                result := true
+        result
+    
+    isTripleBottom() =>
+        bool result = false
+        if array.size(swingLows) >= 3
+            l1 = array.get(swingLows, array.size(swingLows) - 1)
+            l2 = array.get(swingLows, array.size(swingLows) - 2)
+            l3 = array.get(swingLows, array.size(swingLows) - 3)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l3Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 3)
+            
+            // Check if the three lows are at similar levels
+            priceDiff1 = math.abs(l1 - l2) / l1 * 100
+            priceDiff2 = math.abs(l2 - l3) / l2 * 100
+            if priceDiff1 <= low_tol and priceDiff2 <= low_tol
+                result := true
+        result
+    
+    isTripleTop() =>
+        bool result = false
+        if array.size(swingHighs) >= 3
+            h1 = array.get(swingHighs, array.size(swingHighs) - 1)
+            h2 = array.get(swingHighs, array.size(swingHighs) - 2)
+            h3 = array.get(swingHighs, array.size(swingHighs) - 3)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h3Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 3)
+            
+            // Check if the three highs are at similar levels
+            priceDiff1 = math.abs(h1 - h2) / h1 * 100
+            priceDiff2 = math.abs(h2 - h3) / h2 * 100
+            if priceDiff1 <= up_tol and priceDiff2 <= up_tol
+                result := true
+        result
+    
+    isHeadAndShoulders() =>
+        bool result = false
+        if array.size(swingHighs) >= 3 and array.size(swingLows) >= 2
+            h1 = array.get(swingHighs, array.size(swingHighs) - 3)  // Left shoulder
+            h2 = array.get(swingHighs, array.size(swingHighs) - 2)  // Head
+            h3 = array.get(swingHighs, array.size(swingHighs) - 1)  // Right shoulder
+            l1 = array.get(swingLows, array.size(swingLows) - 2)    // Left neckline
+            l2 = array.get(swingLows, array.size(swingLows) - 1)    // Right neckline
+            
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 3)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h3Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            
+            // Check if it's a valid head and shoulders pattern
+            shoulderDiff = math.abs(h1 - h3) / h1 * 100
+            headHigher = h2 > h1 and h2 > h3
+            necklineLevel = math.abs(l1 - l2) / l1 * 100
+            
+            if shoulderDiff <= up_tol and headHigher and necklineLevel <= low_tol
+                result := true
+        result
+    
+    isInvHeadAndShoulders() =>
+        bool result = false
+        if array.size(swingLows) >= 3 and array.size(swingHighs) >= 2
+            l1 = array.get(swingLows, array.size(swingLows) - 3)  // Left shoulder
+            l2 = array.get(swingLows, array.size(swingLows) - 2)  // Head
+            l3 = array.get(swingLows, array.size(swingLows) - 1)  // Right shoulder
+            h1 = array.get(swingHighs, array.size(swingHighs) - 2)    // Left neckline
+            h2 = array.get(swingHighs, array.size(swingHighs) - 1)    // Right neckline
+            
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 3)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l3Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            
+            // Check if it's a valid inverse head and shoulders pattern
+            shoulderDiff = math.abs(l1 - l3) / l1 * 100
+            headLower = l2 < l1 and l2 < l3
+            necklineLevel = math.abs(h1 - h2) / h1 * 100
+            
+            if shoulderDiff <= low_tol and headLower and necklineLevel <= up_tol
+                result := true
+        result
+    
+    // Draw patterns
+    drawDoubleBottom() =>
+        if array.size(swingLows) >= 2 and array.size(swingHighs) >= 1
+            l1 = array.get(swingLows, array.size(swingLows) - 2)
+            l2 = array.get(swingLows, array.size(swingLows) - 1)
+            h1 = array.get(swingHighs, array.size(swingHighs) - 1)
+            
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(l1Idx, l1, h1Idx, h1, color=bull_pattern_colour, width=2)
+            var line line2 = line.new(h1Idx, h1, l2Idx, l2, color=bull_pattern_colour, width=2)
+            var line line3 = line.new(l1Idx, l1, bar_index, l1, color=bull_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, l1Idx, l1)
+            line.set_xy2(line1, h1Idx, h1)
+            
+            line.set_xy1(line2, h1Idx, h1)
+            line.set_xy2(line2, l2Idx, l2)
+            
+            line.set_xy1(line3, l1Idx, l1)
+            line.set_xy2(line3, bar_index, l1)
+            
+            // Add label
+            var label lbl = label.new(l2Idx, l2, "DOUBLE BOTTOM", color=color.rgb(54, 58, 69, 100), style=label.style_label_up, textcolor=bull_pattern_colour)
+            label.set_xy(lbl, l2Idx, l2)
+    
+    drawDoubleTop() =>
+        if array.size(swingHighs) >= 2 and array.size(swingLows) >= 1
+            h1 = array.get(swingHighs, array.size(swingHighs) - 2)
+            h2 = array.get(swingHighs, array.size(swingHighs) - 1)
+            l1 = array.get(swingLows, array.size(swingLows) - 1)
+            
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(h1Idx, h1, l1Idx, l1, color=bear_pattern_colour, width=2)
+            var line line2 = line.new(l1Idx, l1, h2Idx, h2, color=bear_pattern_colour, width=2)
+            var line line3 = line.new(h1Idx, h1, bar_index, h1, color=bear_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, h1Idx, h1)
+            line.set_xy2(line1, l1Idx, l1)
+            
+            line.set_xy1(line2, l1Idx, l1)
+            line.set_xy2(line2, h2Idx, h2)
+            
+            line.set_xy1(line3, h1Idx, h1)
+            line.set_xy2(line3, bar_index, h1)
+            
+            // Add label
+            var label lbl = label.new(h2Idx, h2, "DOUBLE TOP", color=color.rgb(54, 58, 69, 100), style=label.style_label_down, textcolor=bear_pattern_colour)
+            label.set_xy(lbl, h2Idx, h2)
+    
+    drawTripleBottom() =>
+        if array.size(swingLows) >= 3 and array.size(swingHighs) >= 2
+            l1 = array.get(swingLows, array.size(swingLows) - 3)
+            l2 = array.get(swingLows, array.size(swingLows) - 2)
+            l3 = array.get(swingLows, array.size(swingLows) - 1)
+            h1 = array.get(swingHighs, array.size(swingHighs) - 2)
+            h2 = array.get(swingHighs, array.size(swingHighs) - 1)
+            
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 3)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l3Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(l1Idx, l1, h1Idx, h1, color=bull_pattern_colour, width=2)
+            var line line2 = line.new(h1Idx, h1, l2Idx, l2, color=bull_pattern_colour, width=2)
+            var line line3 = line.new(l2Idx, l2, h2Idx, h2, color=bull_pattern_colour, width=2)
+            var line line4 = line.new(h2Idx, h2, l3Idx, l3, color=bull_pattern_colour, width=2)
+            var line line5 = line.new(l1Idx, l1, bar_index, l1, color=bull_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, l1Idx, l1)
+            line.set_xy2(line1, h1Idx, h1)
+            
+            line.set_xy1(line2, h1Idx, h1)
+            line.set_xy2(line2, l2Idx, l2)
+            
+            line.set_xy1(line3, l2Idx, l2)
+            line.set_xy2(line3, h2Idx, h2)
+            
+            line.set_xy1(line4, h2Idx, h2)
+            line.set_xy2(line4, l3Idx, l3)
+            
+            line.set_xy1(line5, l1Idx, l1)
+            line.set_xy2(line5, bar_index, l1)
+            
+            // Add label
+            var label lbl = label.new(l3Idx, l3, "TRIPLE BOTTOM", color=color.rgb(54, 58, 69, 100), style=label.style_label_up, textcolor=bull_pattern_colour)
+            label.set_xy(lbl, l3Idx, l3)
+    
+    drawTripleTop() =>
+        if array.size(swingHighs) >= 3 and array.size(swingLows) >= 2
+            h1 = array.get(swingHighs, array.size(swingHighs) - 3)
+            h2 = array.get(swingHighs, array.size(swingHighs) - 2)
+            h3 = array.get(swingHighs, array.size(swingHighs) - 1)
+            l1 = array.get(swingLows, array.size(swingLows) - 2)
+            l2 = array.get(swingLows, array.size(swingLows) - 1)
+            
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 3)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h3Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(h1Idx, h1, l1Idx, l1, color=bear_pattern_colour, width=2)
+            var line line2 = line.new(l1Idx, l1, h2Idx, h2, color=bear_pattern_colour, width=2)
+            var line line3 = line.new(h2Idx, h2, l2Idx, l2, color=bear_pattern_colour, width=2)
+            var line line4 = line.new(l2Idx, l2, h3Idx, h3, color=bear_pattern_colour, width=2)
+            var line line5 = line.new(h1Idx, h1, bar_index, h1, color=bear_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, h1Idx, h1)
+            line.set_xy2(line1, l1Idx, l1)
+            
+            line.set_xy1(line2, l1Idx, l1)
+            line.set_xy2(line2, h2Idx, h2)
+            
+            line.set_xy1(line3, h2Idx, h2)
+            line.set_xy2(line3, l2Idx, l2)
+            
+            line.set_xy1(line4, l2Idx, l2)
+            line.set_xy2(line4, h3Idx, h3)
+            
+            line.set_xy1(line5, h1Idx, h1)
+            line.set_xy2(line5, bar_index, h1)
+            
+            // Add label
+            var label lbl = label.new(h3Idx, h3, "TRIPLE TOP", color=color.rgb(54, 58, 69, 100), style=label.style_label_down, textcolor=bear_pattern_colour)
+            label.set_xy(lbl, h3Idx, h3)
+    
+    drawHeadAndShoulders() =>
+        if array.size(swingHighs) >= 3 and array.size(swingLows) >= 2
+            h1 = array.get(swingHighs, array.size(swingHighs) - 3)  // Left shoulder
+            h2 = array.get(swingHighs, array.size(swingHighs) - 2)  // Head
+            h3 = array.get(swingHighs, array.size(swingHighs) - 1)  // Right shoulder
+            l1 = array.get(swingLows, array.size(swingLows) - 2)    // Left neckline
+            l2 = array.get(swingLows, array.size(swingLows) - 1)    // Right neckline
+            
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 3)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h3Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(h1Idx, h1, l1Idx, l1, color=bear_pattern_colour, width=2)
+            var line line2 = line.new(l1Idx, l1, h2Idx, h2, color=bear_pattern_colour, width=2)
+            var line line3 = line.new(h2Idx, h2, l2Idx, l2, color=bear_pattern_colour, width=2)
+            var line line4 = line.new(l2Idx, l2, h3Idx, h3, color=bear_pattern_colour, width=2)
+            var line line5 = line.new(l1Idx, l1, l2Idx, l2, color=bear_pattern_colour, width=2, style=line.style_dashed)
+            var line line7 = line.new(l2Idx, l2, bar_index, l2, color=bear_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, h1Idx, h1)
+            line.set_xy2(line1, l1Idx, l1)
+            
+            line.set_xy1(line2, l1Idx, l1)
+            line.set_xy2(line2, h2Idx, h2)
+            
+            line.set_xy1(line3, h2Idx, h2)
+            line.set_xy2(line3, l2Idx, l2)
+            
+            line.set_xy1(line4, l2Idx, l2)
+            line.set_xy2(line4, h3Idx, h3)
+            
+            line.set_xy1(line5, l1Idx, l1)
+            line.set_xy2(line5, l2Idx, l2)
+            
+            line.set_xy1(line7, l2Idx, l2)
+            line.set_xy2(line7, bar_index, l2)
+            
+            // Add label
+            var label lbl = label.new(h2Idx, h2, "HEAD AND SHOULDERS", color=color.rgb(54, 58, 69, 100), style=label.style_label_down, textcolor=bear_pattern_colour)
+            label.set_xy(lbl, h2Idx, h2)
+    
+    drawInvHeadAndShoulders() =>
+        if array.size(swingLows) >= 3 and array.size(swingHighs) >= 2
+            l1 = array.get(swingLows, array.size(swingLows) - 3)  // Left shoulder
+            l2 = array.get(swingLows, array.size(swingLows) - 2)  // Head
+            l3 = array.get(swingLows, array.size(swingLows) - 1)  // Right shoulder
+            h1 = array.get(swingHighs, array.size(swingHighs) - 2)    // Left neckline
+            h2 = array.get(swingHighs, array.size(swingHigh  - 2)    // Left neckline
+            h2 = array.get(swingHighs, array.size(swingHighs) - 1)    // Right neckline
+            
+            l1Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 3)
+            l2Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 2)
+            l3Idx = array.get(swingLowIdxs, array.size(swingLowIdxs) - 1)
+            h1Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 2)
+            h2Idx = array.get(swingHighIdxs, array.size(swingHighIdxs) - 1)
+            
+            // Draw pattern lines
+            var line line1 = line.new(l1Idx, l1, h1Idx, h1, color=bull_pattern_colour, width=2)
+            var line line2 = line.new(h1Idx, h1, l2Idx, l2, color=bull_pattern_colour, width=2)
+            var line line3 = line.new(l2Idx, l2, h2Idx, h2, color=bull_pattern_colour, width=2)
+            var line line4 = line.new(h2Idx, h2, l3Idx, l3, color=bull_pattern_colour, width=2)
+            var line line5 = line.new(h1Idx, h1, h2Idx, h2, color=bull_pattern_colour, width=2, style=line.style_dashed)
+            var line line6 = line.new(h2Idx, h2, bar_index, h2, color=bull_pattern_colour, width=2, style=line.style_dashed)
+            
+            line.set_xy1(line1, l1Idx, l1)
+            line.set_xy2(line1, h1Idx, h1)
+            
+            line.set_xy1(line2, h1Idx, h1)
+            line.set_xy2(line2, l2Idx, l2)
+            
+            line.set_xy1(line3, l2Idx, l2)
+            line.set_xy2(line3, h2Idx, h2)
+            
+            line.set_xy1(line4, h2Idx, h2)
+            line.set_xy2(line4, l3Idx, l3)
+            
+            line.set_xy1(line5, h1Idx, h1)
+            line.set_xy2(line5, h2Idx, h2)
+            
+            line.set_xy1(line6, h2Idx, h2)
+            line.set_xy2(line6, bar_index, h2)
+            
+            // Add label
+            var label lbl = label.new(l2Idx, l2, "INV. HEAD AND SHOULDERS", color=color.rgb(54, 58, 69, 100), style=label.style_label_up, textcolor=bull_pattern_colour)
+            label.set_xy(lbl, l2Idx, l2)
+    
+    // Detect and draw patterns
+    if show_double_bot and isDoubleBottom()
+        drawDoubleBottom()
+    
+    if show_double_top and isDoubleTop()
+        drawDoubleTop()
+    
+    if show_triple_bot and isTripleBottom()
+        drawTripleBottom()
+    
+    if show_triple_top and isTripleTop()
+        drawTripleTop()
+    
+    if show_head_shoulders and isHeadAndShoulders()
+        drawHeadAndShoulders()
+    
+    if show_inv_head_shoulders and isInvHeadAndShoulders()
+        drawInvHeadAndShoulders()
+
+//==============================================================================
+//                          CYCLES ANALYSIS
+//==============================================================================
+
+if show_cycles
+    // Cycles Settings
+    group_cycles = "Cycles Analysis Settings"
+    changeInDirectionPercents = input.float(30, "Change in Direction, %", minval=0.1, maxval=100, group=group_cycles)
+    durationUnits = input.string("Days", "Duration Units", ["Days", "Candles"], group=group_cycles)
+    showBackground = input.bool(true, "Show Background", group=group_cycles)
+    showLabels = input.bool(true, "Show Labels", group=group_cycles)
+    
+    // Cycle detection variables
+    var float curHighPrice = high
+    var int curHighDate = time
+    var int curHighBar = bar_index
+    var float curLowPrice = low
+    var int curLowDate = time
+    var int curLowBar = bar_index
+    var string direction = "Bull"
+    
+    // Store cycle points
+    var array<float> bullCycleTops = array.new_float(0)
+    var array<float> bearCycleBottoms = array.new_float(0)
+    var array<int> bullCycleDates = array.new_int(0)
+    var array<int> bearCycleDates = array.new_int(0)
+    
+    // Calculate time difference in days
+    calculateDaysElapsed(startTime, endTime) =>
+        (endTime - startTime) / (1000 * 60 * 60 * 24)
+    
+    // Calculate time difference in candles
+    calculateCandlesElapsed(startBar, endBar) =>
+        endBar - startBar
+    
+    // Calculate time difference based on selected units
+    calculateTimeElapsed(startTime, endTime, startBar, endBar) =>
+        durationUnits == "Days" ? calculateDaysElapsed(startTime, endTime) : calculateCandlesElapsed(startBar, endBar)
+    
+    // Update high/low values
+    if high > curHighPrice
+        curHighPrice := high
+        curHighDate := time
+        curHighBar := bar_index
+    
+    if low < curLowPrice
+        curLowPrice := low
+        curLowDate := time
+        curLowBar := bar_index
+    
+    // Detect cycle changes
+    if direction == "Bull"
+        // Check for change to bear market
+        if low < curHighPrice * (1 - changeInDirectionPercents/100)
+            // Add bull cycle top
+            array.push(bullCycleTops, curHighPrice)
+            array.push(bullCycleDates, curHighDate)
+            
+            // Draw bull cycle
+            if showBackground and array.size(bullCycleTops) > 0
+                var line bullTopLine = line.new(curHighDate, curHighPrice, curHighDate, curHighPrice + 1, xloc=xloc.bar_time, extend=extend.none, color=color.green)
+                line.set_xy1(bullTopLine, curHighDate, curHighPrice)
+                line.set_xy2(bullTopLine, curHighDate, curHighPrice + 1)
+                
+                if array.size(bearCycleBottoms) > 0
+                    lastBearDate = array.get(bearCycleDates, array.size(bearCycleDates) - 1)
+                    lastBearPrice = array.get(bearCycleBottoms, array.size(bearCycleBottoms) - 1)
+                    var line bearBottomLine = line.new(lastBearDate, lastBearPrice, lastBearDate, lastBearPrice - 1, xloc=xloc.bar_time, extend=extend.none, color=color.red)
+                    line.set_xy1(bearBottomLine, lastBearDate, lastBearPrice)
+                    line.set_xy2(bearBottomLine, lastBearDate, lastBearPrice - 1)
+                    
+                    var linefill cycleFill = linefill.new(bearBottomLine, bullTopLine, color.new(color.green, 90))
+            
+            // Add label
+            if showLabels
+                cycleDuration = calculateTimeElapsed(array.size(bearCycleDates) > 0 ? array.get(bearCycleDates, array.size(bearCycleDates) - 1) : 0, 
+                                                   curHighDate,
+                                                   array.size(bearCycleDates) > 0 ? array.get(bearCycleDates, array.size(bearCycleDates) - 1) : 0,
+                                                   curHighBar)
+                cycleChange = array.size(bearCycleBottoms) > 0 ? (curHighPrice - array.get(bearCycleBottoms, array.size(bearCycleBottoms) - 1)) / array.get(bearCycleBottoms, array.size(bearCycleBottoms) - 1) * 100 : 0
+                
+                var label cycleLbl = label.new(curHighDate, curHighPrice, 
+                                             text="Bull Cycle Top\nDuration: " + str.tostring(cycleDuration) + " " + durationUnits + "\nChange: " + str.tostring(cycleChange, "#.##") + "%", 
+                                             xloc=xloc.bar_time, 
+                                             style=label.style_label_down, 
+                                             color=color.new(color.green, 30), 
+                                             textcolor=color.white)
+                label.set_xy(cycleLbl, curHighDate, curHighPrice)
+            
+            // Reset for bear cycle
+            direction := "Bear"
+            curLowPrice := low
+            curLowDate := time
+            curLowBar := bar_index
+    else  // Bear direction
+        // Check for change to bull market
+        if high > curLowPrice * (1 + changeInDirectionPercents/100)
+            // Add bear cycle bottom
+            array.push(bearCycleBottoms, curLowPrice)
+            array.push(bearCycleDates, curLowDate)
+            
+            // Draw bear cycle
+            if showBackground and array.size(bearCycleBottoms) > 0
+                var line bearBottomLine = line.new(curLowDate, curLowPrice, curLowDate, curLowPrice - 1, xloc=xloc.bar_time, extend=extend.none, color=color.red)
+                line.set_xy1(bearBottomLine, curLowDate, curLowPrice)
+                line.set_xy2(bearBottomLine, curLowDate, curLowPrice - 1)
+                
+                if array.size(bullCycleTops) > 0
+                    lastBullDate = array.get(bullCycleDates, array.size(bullCycleDates) - 1)
+                    lastBullPrice = array.get(bullCycleTops, array.size(bullCycleTops) - 1)
+                    var line bullTopLine = line.new(lastBullDate, lastBullPrice, lastBullDate, lastBullPrice + 1, xloc=xloc.bar_time, extend=extend.none, color=color.green)
+                    line.set_xy1(bullTopLine, lastBullDate, lastBullPrice)
+                    line.set_xy2(bullTopLine, lastBullDate, lastBullPrice + 1)
+                    
+                    var linefill cycleFill = linefill.new(bullTopLine, bearBottomLine, color.new(color.red, 90))
+            
+            // Add label
+            if showLabels
+                cycleDuration = calculateTimeElapsed(array.size(bullCycleDates) > 0 ? array.get(bullCycleDates, array.size(bullCycleDates) - 1) : 0, 
+                                                   curLowDate,
+                                                   array.size(bullCycleDates) > 0 ? array.get(bullCycleDates, array.size(bullCycleDates) - 1) : 0,
+                                                   curLowBar)
+                cycleChange = array.size(bullCycleTops) > 0 ? (curLowPrice - array.get(bullCycleTops, array.size(bullCycleTops) - 1)) / array.get(bullCycleTops, array.size(bullCycleTops) - 1) * 100 : 0
+                
+                var label cycleLbl = label.new(curLowDate, curLowPrice, 
+                                             text="Bear Cycle Bottom\nDuration: " + str.tostring(cycleDuration) + " " + durationUnits + "\nChange: " + str.tostring(cycleChange, "#.##") + "%", 
+                                             xloc=xloc.bar_time, 
+                                             style=label.style_label_up, 
+                                             color=color.new(color.red, 30), 
+                                             textcolor=color.white)
+                label.set_xy(cycleLbl, curLowDate, curLowPrice)
+            
+            // Reset for bull cycle
+            direction := "Bull"
+            curHighPrice := high
+            curHighDate := time
+            curHighBar := bar_index
+    
+    // Display cycle statistics on last bar
+    if barstate.islast and array.size(bullCycleTops) > 0 and array.size(bearCycleBottoms) > 0
+        var array<float> bullCycleDurations = array.new_float(0)
+        var array<float> bearCycleDurations = array.new_float(0)
+        var array<float> bullCycleChanges = array.new_float(0)
+        var array<float> bearCycleChanges = array.new_float(0)
+        
+        // Calculate cycle durations and changes
+        for i = 1 to math.min(array.size(bullCycleDates), array.size(bearCycleDates))
+            if i < array.size(bullCycleDates) and i-1 < array.size(bearCycleDates)
+                bullDuration = calculateTimeElapsed(array.get(bearCycleDates, i-1), array.get(bullCycleDates, i), 0, 0)
+                bullCycleDurations.push(bullDuration)
+                
+                bullChange = (array.get(bullCycleTops, i) - array.get(bearCycleBottoms, i-1)) / array.get(bearCycleBottoms, i-1) * 100
+                bullCycleChanges.push(bullChange)
+            
+            if i < array.size(bearCycleDates) and i-1 < array.size(bullCycleDates)
+                bearDuration = calculateTimeElapsed(array.get(bullCycleDates, i-1), array.get(bearCycleDates, i), 0, 0)
+                bearCycleDurations.push(bearDuration)
+                
+                bearChange = (array.get(bearCycleBottoms, i) - array.get(bullCycleTops, i-1)) / array.get(bullCycleTops, i-1) * 100
+                bearCycleChanges.push(bearChange)
+        
+        // Create statistics table
+        var table cycleStats = table.new(position.top_right, 3, 9, border_width=1)
+        
+        table.cell(cycleStats, 0, 0, "Cycle Statistics", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 0, "Bull", bgcolor=color.green, text_color=color.white)
+        table.cell(cycleStats, 2, 0, "Bear", bgcolor=color.red, text_color=color.white)
+        
+        table.cell(cycleStats, 0, 1, "Count", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 1, str.tostring(array.size(bullCycleDurations)), text_color=color.black)
+        table.cell(cycleStats, 2, 1, str.tostring(array.size(bearCycleDurations)), text_color=color.black)
+        
+        table.cell(cycleStats, 0, 2, "Avg Duration", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 2, str.tostring(array.avg(bullCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        table.cell(cycleStats, 2, 2, str.tostring(array.avg(bearCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        
+        table.cell(cycleStats, 0, 3, "Max Duration", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 3, str.tostring(array.max(bullCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        table.cell(cycleStats, 2, 3, str.tostring(array.max(bearCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        
+        table.cell(cycleStats, 0, 4, "Min Duration", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 4, str.tostring(array.min(bullCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        table.cell(cycleStats, 2, 4, str.tostring(array.min(bearCycleDurations), "#.#") + " " + durationUnits, text_color=color.black)
+        
+        table.cell(cycleStats, 0, 5, "Avg Change", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 5, str.tostring(array.avg(bullCycleChanges), "#.##") + "%", text_color=color.black)
+        table.cell(cycleStats, 2, 5, str.tostring(array.avg(bearCycleChanges), "#.##") + "%", text_color=color.black)
+        
+        table.cell(cycleStats, 0, 6, "Max Change", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 6, str.tostring(array.max(bullCycleChanges), "#.##") + "%", text_color=color.black)
+        table.cell(cycleStats, 2, 6, str.tostring(array.max(bearCycleChanges), "#.##") + "%", text_color=color.black)
+        
+        table.cell(cycleStats, 0, 7, "Min Change", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 7, str.tostring(array.min(bullCycleChanges), "#.##") + "%", text_color=color.black)
+        table.cell(cycleStats, 2, 7, str.tostring(array.min(bearCycleChanges), "#.##") + "%", text_color=color.black)
+        
+        table.cell(cycleStats, 0, 8, "Current Cycle", bgcolor=color.gray, text_color=color.white)
+        table.cell(cycleStats, 1, 8, direction == "Bull" ? "Active" : "", bgcolor=direction == "Bull" ? color.green : color.white, text_color=color.white)
+        table.cell(cycleStats, 2, 8, direction == "Bear" ? "Active" : "", bgcolor=direction == "Bear" ? color.red : color.white, text_color=color.white)
