@@ -9,15 +9,19 @@ from datetime import datetime, timedelta
 import json
 from sklearn.linear_model import LinearRegression
 from flask import Flask, jsonify, request, make_response
+from flask_cors import CORS
 import logging
 import time
 import requests
 import math
+import yfinance as yf
 
 warnings.filterwarnings('ignore')
 
 # ================= GLOBAL CONFIGURATION =================
 TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
+DEMO_API_URL = "https://your-demo-api.herokuapp.com"  
+
 RISK_FREE_RATE = 0.02
 MAX_WORKERS = 1  # Reduced to avoid rate limiting
 MIN_MARKET_CAP = 500e6
@@ -45,10 +49,11 @@ FUNDAMENTAL_WEIGHT = 0.3
 SENTIMENT_WEIGHT = 0.2
 TECHNICAL_WEIGHT = 0.5
 
-# --- Rate limit config for batching (Updated to 6 per minute) ---
+# --- Rate limit config for batching ---
 TWELVE_DATA_RATE_LIMIT_PER_MIN = 6  # 6 requests per minute for free tier
-TWELVE_DATA_BATCH_SIZE = TWELVE_DATA_RATE_LIMIT_PER_MIN  # batch size = rate limit
-TWELVE_DATA_BATCH_SLEEP = 65  # seconds to sleep between batches (a bit more than 60s for safety)
+TWELVE_DATA_BATCH_SIZE = 3  # Process 3 stocks per batch to be safe
+TWELVE_DATA_BATCH_SLEEP = 65  # seconds to sleep between batches
+YFINANCE_DELAY = 0.5  # Small delay between yfinance requests
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -56,16 +61,25 @@ logger = logging.getLogger(__name__)
 
 # ================= DATA FUNCTIONS =================
 def get_filtered_stocks(num_stocks=20):
-    """Get list of stocks to analyze (retaining the original stock list)"""
+    """Get list of stocks to analyze - split between Twelve Data and yfinance"""
     stock_list = [
         "AAPL", "GOOGL", "MSFT", "TSLA", "AMZN",
         "NVDA", "META", "NFLX", "BABA", "AMD",
         "INTC", "UBER", "SHOP", "PYPL", "PEP",
         "KO", "DIS", "NKE", "WMT", "CRM"
     ]
-    return stock_list[:num_stocks]
+    
+    # Split stocks: first 15 for Twelve Data, last 5 for yfinance
+    twelve_data_stocks = stock_list[:15]
+    yfinance_stocks = stock_list[15:20]
+    
+    return {
+        'twelve_data': twelve_data_stocks,
+        'yfinance': yfinance_stocks,
+        'all': stock_list[:num_stocks]
+    }
 
-def fetch_stock_data(symbol, interval="1day", outputsize=100):
+def fetch_stock_data_twelve(symbol, interval="1day", outputsize=100):
     """Fetch stock data from Twelve Data API with proper error handling"""
     try:
         url = f"https://api.twelvedata.com/time_series"
@@ -107,11 +121,53 @@ def fetch_stock_data(symbol, interval="1day", outputsize=100):
         # Remove rows with NaN values
         df.dropna(inplace=True)
         
-        logger.info(f"Successfully fetched {len(df)} rows for {symbol}")
+        logger.info(f"Successfully fetched {len(df)} rows for {symbol} from Twelve Data")
         return df
         
     except Exception as e:
-        logger.error(f"Error fetching data for {symbol}: {str(e)}")
+        logger.error(f"Error fetching data from Twelve Data for {symbol}: {str(e)}")
+        return pd.DataFrame()
+
+def fetch_stock_data_yfinance(symbol, period="100d", interval="1d"):
+    """Fetch stock data from yfinance with proper error handling"""
+    try:
+        # Add small delay to be respectful
+        time.sleep(YFINANCE_DELAY)
+        
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=interval)
+        
+        if df.empty:
+            logger.error(f"Empty DataFrame for {symbol} from yfinance")
+            return pd.DataFrame()
+        
+        # Rename columns to match Twelve Data format
+        df.columns = df.columns.str.lower()
+        df.reset_index(inplace=True)
+        df.rename(columns={'date': 'datetime'}, inplace=True)
+        df.set_index('datetime', inplace=True)
+        
+        # Remove any NaN values
+        df.dropna(inplace=True)
+        
+        logger.info(f"Successfully fetched {len(df)} rows for {symbol} from yfinance")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching data from yfinance for {symbol}: {str(e)}")
+        return pd.DataFrame()
+
+def fetch_stock_data(symbol, interval="1day", outputsize=100, source="twelve_data"):
+    """Unified function to fetch stock data from either source"""
+    if source == "twelve_data":
+        return fetch_stock_data_twelve(symbol, interval, outputsize)
+    elif source == "yfinance":
+        # Convert interval format for yfinance
+        yf_interval = "1d" if interval == "1day" else "1wk" if interval == "1week" else "1d"
+        yf_period = f"{outputsize}d" if interval == "1day" else f"{outputsize//7}wk"
+        return fetch_stock_data_yfinance(symbol, period=yf_period, interval=yf_interval)
+    else:
+        logger.error(f"Unknown data source: {source}")
         return pd.DataFrame()
 
 def heikin_ashi(df):
@@ -408,7 +464,9 @@ def get_fundamental_data(symbol):
     """Get fundamental data (simulated with realistic values)"""
     pe_ratios = {
         'AAPL': 28.5, 'MSFT': 32.1, 'TSLA': 45.2, 'GOOGL': 24.8, 'AMZN': 38.9,
-        'META': 22.7, 'NVDA': 55.3, 'JPM': 12.4, 'JNJ': 16.8, 'V': 34.2
+        'META': 22.7, 'NVDA': 55.3, 'JPM': 12.4, 'JNJ': 16.8, 'V': 34.2,
+        'INTC': 15.2, 'UBER': 28.9, 'SHOP': 42.1, 'PYPL': 18.7, 'PEP': 25.3,
+        'KO': 24.8, 'DIS': 35.6, 'NKE': 31.2, 'WMT': 26.4, 'CRM': 48.9
     }
     
     return {
@@ -422,7 +480,9 @@ def get_market_sentiment(symbol):
     """Get market sentiment (simulated)"""
     sentiment_scores = {
         'AAPL': 0.75, 'MSFT': 0.80, 'TSLA': 0.60, 'GOOGL': 0.70, 'AMZN': 0.65,
-        'META': 0.55, 'NVDA': 0.85, 'JPM': 0.60, 'JNJ': 0.70, 'V': 0.75
+        'META': 0.55, 'NVDA': 0.85, 'JPM': 0.60, 'JNJ': 0.70, 'V': 0.75,
+        'INTC': 0.45, 'UBER': 0.58, 'SHOP': 0.62, 'PYPL': 0.52, 'PEP': 0.68,
+        'KO': 0.72, 'DIS': 0.63, 'NKE': 0.69, 'WMT': 0.66, 'CRM': 0.71
     }
     return sentiment_scores.get(symbol, 0.5)
 
@@ -481,17 +541,14 @@ def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamen
         return 'Neutral', 0.0
 
 # ================= STOCK ANALYSIS =================
-def analyze_stock(symbol):
+def analyze_stock(symbol, data_source="twelve_data"):
     """Analyze a single stock and return structured JSON data with daily and weekly timeframes"""
     try:
-        logger.info(f"Starting analysis for {symbol}")
-        
-        # Add a small delay between individual stock requests within a batch
-        time.sleep(1)
+        logger.info(f"Starting analysis for {symbol} using {data_source}")
         
         # Fetch both daily and weekly data
-        daily_data = fetch_stock_data(symbol, "1day", 100)
-        weekly_data = fetch_stock_data(symbol, "1week", 50)
+        daily_data = fetch_stock_data(symbol, "1day", 100, data_source)
+        weekly_data = fetch_stock_data(symbol, "1week", 50, data_source)
         
         if daily_data.empty and weekly_data.empty:
             logger.error(f"No data available for {symbol}")
@@ -509,7 +566,9 @@ def analyze_stock(symbol):
         
         # Structure the response
         result = {
-            symbol: {}
+            symbol: {
+                'data_source': data_source
+            }
         }
         
         if daily_analysis:
@@ -652,48 +711,76 @@ def analyze_timeframe(data, symbol, timeframe):
 
 # ================= MAIN EXECUTION =================
 def analyze_all_stocks():
-    """Analyze stocks and return JSON response, batching requests to respect API rate limits."""
+    """Analyze stocks and return JSON response, using both data sources with proper rate limiting."""
     try:
-        symbols = get_filtered_stocks(20)  # Retain the original 20 stocks
+        stock_config = get_filtered_stocks(20)
+        twelve_data_stocks = stock_config['twelve_data']
+        yfinance_stocks = stock_config['yfinance']
+        
         results = {}
-        total = len(symbols)
-        batch_size = TWELVE_DATA_BATCH_SIZE
-        num_batches = math.ceil(total / batch_size)
         
-        logger.info(f"Starting analysis of {total} stocks in {num_batches} batches of {batch_size}: {symbols}")
+        logger.info(f"Starting analysis of 20 stocks:")
+        logger.info(f"Twelve Data stocks (15): {twelve_data_stocks}")
+        logger.info(f"yfinance stocks (5): {yfinance_stocks}")
         
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * batch_size
-            batch_end = min((batch_idx + 1) * batch_size, total)
-            batch_symbols = symbols[batch_start:batch_end]
+        # Process Twelve Data stocks in batches
+        if twelve_data_stocks:
+            batch_size = TWELVE_DATA_BATCH_SIZE
+            num_batches = math.ceil(len(twelve_data_stocks) / batch_size)
             
-            logger.info(f"Processing batch {batch_idx+1}/{num_batches}: {batch_symbols}")
-            
-            for symbol in batch_symbols:
+            for batch_idx in range(num_batches):
+                batch_start = batch_idx * batch_size
+                batch_end = min((batch_idx + 1) * batch_size, len(twelve_data_stocks))
+                batch_symbols = twelve_data_stocks[batch_start:batch_end]
+                
+                logger.info(f"Processing Twelve Data batch {batch_idx+1}/{num_batches}: {batch_symbols}")
+                
+                for symbol in batch_symbols:
+                    try:
+                        result = analyze_stock(symbol, "twelve_data")
+                        if result:
+                            results.update(result)
+                            logger.info(f"Successfully processed {symbol} (Twelve Data)")
+                        else:
+                            logger.warning(f"Failed to process {symbol} (Twelve Data)")
+                    except Exception as e:
+                        logger.error(f"Error processing {symbol} (Twelve Data): {str(e)}")
+                
+                # Sleep between batches (except for the last batch)
+                if batch_idx < num_batches - 1:
+                    logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s to respect Twelve Data rate limit...")
+                    time.sleep(TWELVE_DATA_BATCH_SLEEP)
+        
+        # Process yfinance stocks (no batching needed, more lenient rate limits)
+        if yfinance_stocks:
+            logger.info(f"Processing yfinance stocks: {yfinance_stocks}")
+            for symbol in yfinance_stocks:
                 try:
-                    result = analyze_stock(symbol)
+                    result = analyze_stock(symbol, "yfinance")
                     if result:
-                        results.update(result)  # Merge the stock result into main results
-                        logger.info(f"Successfully processed {symbol}")
+                        results.update(result)
+                        logger.info(f"Successfully processed {symbol} (yfinance)")
                     else:
-                        logger.warning(f"Failed to process {symbol}")
+                        logger.warning(f"Failed to process {symbol} (yfinance)")
                 except Exception as e:
-                    logger.error(f"Error processing {symbol}: {str(e)}")
-            
-            # If not the last batch, sleep to respect rate limit
-            if batch_idx < num_batches - 1:
-                logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s to respect API rate limit before next batch...")
-                time.sleep(TWELVE_DATA_BATCH_SLEEP)
+                    logger.error(f"Error processing {symbol} (yfinance): {str(e)}")
         
         # Add metadata
         response = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': len(results),
             'status': 'success' if results else 'no_data',
+            'data_sources': {
+                'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
+                'yfinance_count': len([k for k, v in results.items() if v.get('data_source') == 'yfinance'])
+            },
             **results  # Spread the stock results at the top level
         }
         
         logger.info(f"Analysis complete. Processed {len(results)} stocks successfully.")
+        logger.info(f"Twelve Data: {response['data_sources']['twelve_data_count']} stocks")
+        logger.info(f"yfinance: {response['data_sources']['yfinance_count']} stocks")
+        
         return response
         
     except Exception as e:
@@ -708,13 +795,8 @@ def analyze_all_stocks():
 # ================= FLASK APP =================
 app = Flask(__name__)
 
-# Add CORS headers to all responses
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
+# Enable CORS for all routes
+CORS(app, origins=["*"], methods=["GET", "POST", "OPTIONS"], allow_headers=["*"])
 
 @app.route('/analyze', methods=['GET', 'OPTIONS'])
 def analyze():
@@ -729,47 +811,65 @@ def analyze():
     
     try:
         json_response = analyze_all_stocks()
-        return jsonify(json_response)
+        response = jsonify(json_response)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response
     except Exception as e:
         logger.error(f"Error in /analyze endpoint: {str(e)}")
-        return jsonify({
+        error_response = jsonify({
             'error': f"Failed to analyze stocks: {str(e)}",
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': 0,
-            'analysis_results': [],
             'status': 'error'
-        }), 500
+        })
+        error_response.headers.add('Access-Control-Allow-Origin', '*')
+        return error_response, 500
 
 @app.route('/', methods=['GET'])
 def home():
     """Home endpoint"""
-    return jsonify({
+    response = jsonify({
         'message': 'Stock Analysis API is running',
+        'demo_url': DEMO_API_URL,
         'endpoints': {
             '/analyze': 'GET - Analyze stocks and return trading signals',
             '/': 'GET - This help message'
         },
+        'data_sources': {
+            'twelve_data': 'First 15 stocks',
+            'yfinance': 'Last 5 stocks'
+        },
         'status': 'online'
     })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
-# --- ASGI compatibility for Uvicorn ---
-# This allows running the Flask app with Uvicorn ASGI server.
-# Uvicorn expects an ASGI app, but Flask is WSGI. Use asgiref's WsgiToAsgi adapter.
-try:
-    from asgiref.wsgi import WsgiToAsgi
-    asgi_app = WsgiToAsgi(app)
-except ImportError:
-    asgi_app = None  # If asgiref is not installed, ASGI mode won't be available
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    response = jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
 if __name__ == "__main__":
     try:
         # Test the analysis function
         print("Testing stock analysis...")
         json_response = analyze_all_stocks()
-        print(json.dumps(json_response, indent=2))
+        print(f"Analysis complete. Processed {json_response.get('stocks_analyzed', 0)} stocks.")
         
-        # Start Flask app (WSGI mode)
-        print("\nStarting Flask server with CORS enabled...")
+        # Start Flask app
+        print(f"\nStarting Flask server with CORS enabled...")
+        print(f"Demo URL: {DEMO_API_URL}")
+        print("Available endpoints:")
+        print("  - GET /analyze - Analyze all stocks")
+        print("  - GET / - API information")
+        print("  - GET /health - Health check")
+        
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
         
     except Exception as e:
