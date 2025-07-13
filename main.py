@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 
 # ================= GLOBAL CONFIGURATION =================
 TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
-DEMO_API_URL = "https://your-demo-api.herokuapp.com"  
+DEMO_API_URL = "http://localhost:5177"  
 
 RISK_FREE_RATE = 0.02
 MAX_WORKERS = 1  # Reduced to avoid rate limiting
