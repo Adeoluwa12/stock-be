@@ -9,21 +9,21 @@ from datetime import datetime, timedelta
 import json
 from sklearn.linear_model import LinearRegression
 from flask import Flask, jsonify, request, make_response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import logging
 import time
 import requests
 import math
 import yfinance as yf
+import os
 
 warnings.filterwarnings('ignore')
 
 # ================= GLOBAL CONFIGURATION =================
 TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
-DEMO_API_URL = "http://localhost:5177"  
 
 RISK_FREE_RATE = 0.02
-MAX_WORKERS = 1  # Reduced to avoid rate limiting
+MAX_WORKERS = 1
 MIN_MARKET_CAP = 500e6
 MIN_PRICE = 5.0
 PATTERN_SENSITIVITY = 0.05
@@ -49,15 +49,34 @@ FUNDAMENTAL_WEIGHT = 0.3
 SENTIMENT_WEIGHT = 0.2
 TECHNICAL_WEIGHT = 0.5
 
-# --- Rate limit config for batching ---
-TWELVE_DATA_RATE_LIMIT_PER_MIN = 6  # 6 requests per minute for free tier
-TWELVE_DATA_BATCH_SIZE = 3  # Process 3 stocks per batch to be safe
-TWELVE_DATA_BATCH_SLEEP = 65  # seconds to sleep between batches
-YFINANCE_DELAY = 0.5  # Small delay between yfinance requests
+# Rate limiting configuration
+TWELVE_DATA_RATE_LIMIT_PER_MIN = 6
+TWELVE_DATA_BATCH_SIZE = 3
+TWELVE_DATA_BATCH_SLEEP = 65
+YFINANCE_DELAY = 0.5
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging for production
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# ================= FLASK APP SETUP =================
+app = Flask(__name__)
+
+# Configure CORS with explicit settings
+CORS(app, 
+     origins=["*"],
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+     supports_credentials=True)
+
+# Additional CORS configuration
+app.config['CORS_HEADERS'] = 'Content-Type'
 
 # ================= DATA FUNCTIONS =================
 def get_filtered_stocks(num_stocks=20):
@@ -100,25 +119,20 @@ def fetch_stock_data_twelve(symbol, interval="1day", outputsize=100):
             logger.error(f"No values in response for {symbol}: {data}")
             return pd.DataFrame()
         
-        # Convert to DataFrame
         df = pd.DataFrame(data['values'])
         
         if df.empty:
             logger.error(f"Empty DataFrame for {symbol}")
             return pd.DataFrame()
         
-        # Convert columns to numeric and rename
         numeric_columns = ['open', 'high', 'low', 'close', 'volume']
         for col in numeric_columns:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Set datetime index
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.set_index('datetime', inplace=True)
         df.sort_index(inplace=True)
-        
-        # Remove rows with NaN values
         df.dropna(inplace=True)
         
         logger.info(f"Successfully fetched {len(df)} rows for {symbol} from Twelve Data")
@@ -131,7 +145,6 @@ def fetch_stock_data_twelve(symbol, interval="1day", outputsize=100):
 def fetch_stock_data_yfinance(symbol, period="100d", interval="1d"):
     """Fetch stock data from yfinance with proper error handling"""
     try:
-        # Add small delay to be respectful
         time.sleep(YFINANCE_DELAY)
         
         ticker = yf.Ticker(symbol)
@@ -141,13 +154,10 @@ def fetch_stock_data_yfinance(symbol, period="100d", interval="1d"):
             logger.error(f"Empty DataFrame for {symbol} from yfinance")
             return pd.DataFrame()
         
-        # Rename columns to match Twelve Data format
         df.columns = df.columns.str.lower()
         df.reset_index(inplace=True)
         df.rename(columns={'date': 'datetime'}, inplace=True)
         df.set_index('datetime', inplace=True)
-        
-        # Remove any NaN values
         df.dropna(inplace=True)
         
         logger.info(f"Successfully fetched {len(df)} rows for {symbol} from yfinance")
@@ -162,7 +172,6 @@ def fetch_stock_data(symbol, interval="1day", outputsize=100, source="twelve_dat
     if source == "twelve_data":
         return fetch_stock_data_twelve(symbol, interval, outputsize)
     elif source == "yfinance":
-        # Convert interval format for yfinance
         yf_interval = "1d" if interval == "1day" else "1wk" if interval == "1week" else "1d"
         yf_period = f"{outputsize}d" if interval == "1day" else f"{outputsize//7}wk"
         return fetch_stock_data_yfinance(symbol, period=yf_period, interval=yf_interval)
@@ -178,16 +187,13 @@ def heikin_ashi(df):
     try:
         df = df.copy()
         
-        # Ensure we have the required columns
         required_cols = ['open', 'high', 'low', 'close']
         if not all(col in df.columns for col in required_cols):
             logger.error(f"Missing required columns. Available: {df.columns.tolist()}")
             return pd.DataFrame()
         
-        # Calculate Heikin-Ashi values
         df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
         
-        # Calculate HA_Open
         ha_open = [(df['open'].iloc[0] + df['close'].iloc[0]) / 2]
         for i in range(1, len(df)):
             ha_open.append((ha_open[i-1] + df['HA_Close'].iloc[i-1]) / 2)
@@ -196,7 +202,6 @@ def heikin_ashi(df):
         df['HA_High'] = df[['high', 'HA_Open', 'HA_Close']].max(axis=1)
         df['HA_Low'] = df[['low', 'HA_Open', 'HA_Close']].min(axis=1)
         
-        # Remove any remaining NaN values
         df.dropna(subset=['HA_Close', 'HA_Open', 'HA_High', 'HA_Low'], inplace=True)
         
         return df
@@ -213,15 +218,12 @@ def detect_zigzag_pivots(data):
         
         prices = data['HA_Close'].values
         
-        # Find local maxima and minima
         highs = argrelextrema(prices, np.greater, order=ZIGZAG_LENGTH)[0]
         lows = argrelextrema(prices, np.less, order=ZIGZAG_LENGTH)[0]
         
-        # Combine and sort pivot points
         pivot_indices = np.concatenate([highs, lows])
         pivot_indices.sort()
         
-        # Filter pivots based on significance
         filtered_pivots = []
         for i in pivot_indices:
             if len(filtered_pivots) < 2:
@@ -233,7 +235,6 @@ def detect_zigzag_pivots(data):
                 if change > PATTERN_SENSITIVITY:
                     filtered_pivots.append(i)
         
-        # Determine pivot types
         pivot_data = []
         for i in filtered_pivots:
             start_idx = max(0, i - ZIGZAG_DEPTH)
@@ -254,7 +255,6 @@ def detect_zigzag_pivots(data):
         logger.error(f"Error in detect_zigzag_pivots: {str(e)}")
         return []
 
-# ================= TECHNICAL INDICATORS =================
 def calculate_ha_indicators(df):
     """Calculate technical indicators on Heikin-Ashi data"""
     try:
@@ -263,23 +263,19 @@ def calculate_ha_indicators(df):
         
         df = df.copy()
         
-        # Calculate indicators
         df['ATR'] = ta.atr(df['HA_High'], df['HA_Low'], df['HA_Close'], length=14)
         df['RSI'] = ta.rsi(df['HA_Close'], length=14)
         
-        # Calculate ADX
         adx_data = ta.adx(df['HA_High'], df['HA_Low'], df['HA_Close'], length=14)
         if isinstance(adx_data, pd.DataFrame) and 'ADX_14' in adx_data.columns:
             df['ADX'] = adx_data['ADX_14']
         else:
-            df['ADX'] = 25.0  # Default value
+            df['ADX'] = 25.0
         
-        # Calculate cycle information
-        df['Cycle_Phase'] = 'Bull'  # Simplified
-        df['Cycle_Duration'] = 30   # Simplified
+        df['Cycle_Phase'] = 'Bull'
+        df['Cycle_Duration'] = 30
         df['Cycle_Momentum'] = (df['HA_Close'] - df['HA_Close'].shift(10)) / df['HA_Close'].shift(10)
         
-        # Fill NaN values
         df['ATR'] = df['ATR'].fillna(df['ATR'].mean())
         df['RSI'] = df['RSI'].fillna(50.0)
         df['ADX'] = df['ADX'].fillna(25.0)
@@ -291,7 +287,6 @@ def calculate_ha_indicators(df):
         logger.error(f"Error calculating indicators: {str(e)}")
         return None
 
-# ================= PATTERN DETECTION =================
 def detect_geometric_patterns(df, pivots):
     """Detect geometric patterns with simplified logic"""
     patterns = {
@@ -308,12 +303,10 @@ def detect_geometric_patterns(df, pivots):
         if len(pivots) < 5:
             return patterns, {}
         
-        # Simple pattern detection based on pivot analysis
         recent_pivots = pivots[-5:]
         prices = [p[1] for p in recent_pivots]
         types = [p[2] for p in recent_pivots]
         
-        # Rising wedge pattern
         if len([p for p in types if p == 'high']) >= 2 and len([p for p in types if p == 'low']) >= 2:
             highs = [p[1] for p in recent_pivots if p[2] == 'high']
             lows = [p[1] for p in recent_pivots if p[2] == 'low']
@@ -361,7 +354,6 @@ def detect_confluence(df, pivots):
         if df.empty or len(df) < 10:
             return confluence
         
-        # Simple confluence detection
         last_close = df['HA_Close'].iloc[-1]
         prev_close = df['HA_Close'].iloc[-5]
         
@@ -378,7 +370,6 @@ def detect_confluence(df, pivots):
         logger.error(f"Error in confluence detection: {str(e)}")
         return confluence
 
-# ================= CYCLE ANALYSIS =================
 def generate_cycle_analysis(df, symbol):
     """Generate simplified cycle analysis"""
     try:
@@ -392,23 +383,7 @@ def generate_cycle_analysis(df, symbol):
                 'bull_continuation_probability': 50,
                 'bear_transition_probability': 50,
                 'expected_continuation': 'Unknown',
-                'risk_level': 'Medium',
-                'indicators': {
-                    'adx': 25.0,
-                    'adx_trend': 'Neutral',
-                    'rsi': 50.0,
-                    'rsi_status': 'Neutral',
-                    'volume_trend': 'Neutral'
-                },
-                'projection_10_day': {
-                    'continuation': 50,
-                    'reversal': 50
-                },
-                'key_levels': {
-                    'resistance': 0.0,
-                    'support': 0.0,
-                    'next_cycle_date': (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-                }
+                'risk_level': 'Medium'
             }
         
         last_close = df['HA_Close'].iloc[-1]
@@ -426,23 +401,7 @@ def generate_cycle_analysis(df, symbol):
             'bull_continuation_probability': 70 if current_phase == 'Bull' else 30,
             'bear_transition_probability': 30 if current_phase == 'Bull' else 70,
             'expected_continuation': '30-60 days',
-            'risk_level': 'Medium',
-            'indicators': {
-                'adx': round(df['ADX'].iloc[-1], 1) if 'ADX' in df.columns else 25.0,
-                'adx_trend': 'Strong' if df['ADX'].iloc[-1] > 25 else 'Weak' if 'ADX' in df.columns else 'Neutral',
-                'rsi': round(df['RSI'].iloc[-1], 1) if 'RSI' in df.columns else 50.0,
-                'rsi_status': 'Overbought' if df['RSI'].iloc[-1] > 70 else 'Oversold' if df['RSI'].iloc[-1] < 30 else 'Neutral' if 'RSI' in df.columns else 'Neutral',
-                'volume_trend': 'Rising'
-            },
-            'projection_10_day': {
-                'continuation': 70 if current_phase == 'Bull' else 30,
-                'reversal': 30 if current_phase == 'Bull' else 70
-            },
-            'key_levels': {
-                'resistance': round(df['HA_High'].rolling(20).max().iloc[-1], 2),
-                'support': round(df['HA_Low'].rolling(20).min().iloc[-1], 2),
-                'next_cycle_date': (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-            }
+            'risk_level': 'Medium'
         }
         
     except Exception as e:
@@ -459,7 +418,6 @@ def generate_cycle_analysis(df, symbol):
             'risk_level': 'Medium'
         }
 
-# ================= FUNDAMENTAL & SENTIMENT ANALYSIS =================
 def get_fundamental_data(symbol):
     """Get fundamental data (simulated with realistic values)"""
     pe_ratios = {
@@ -486,45 +444,37 @@ def get_market_sentiment(symbol):
     }
     return sentiment_scores.get(symbol, 0.5)
 
-# ================= SIGNAL GENERATION =================
 def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamentals, sentiment):
     """Generate trading signals with simplified logic"""
     try:
         signal_score = 0.0
         
-        # Pattern scoring
         if chart_patterns.get('rising_wedge', False):
             signal_score += 1.0
         if chart_patterns.get('falling_wedge', False):
             signal_score -= 1.0
         
-        # Wave scoring
         if waves['impulse']['detected']:
             signal_score += 1.5
         
-        # Confluence scoring
         if confluence['bullish_confluence']:
             signal_score += 1.0
         if confluence['bearish_confluence']:
             signal_score -= 1.0
         
-        # Technical indicators
         if 'RSI' in indicators and indicators['RSI'] < 30:
             signal_score += 0.5
         elif 'RSI' in indicators and indicators['RSI'] > 70:
             signal_score -= 0.5
         
-        # Fundamental scoring
         pe_ratio = fundamentals['PE_Ratio']
         if pe_ratio < 20:
             signal_score += 0.5
         elif pe_ratio > 40:
             signal_score -= 0.5
         
-        # Sentiment scoring
         signal_score += sentiment * 0.5
         
-        # Determine signal
         if signal_score >= 2.0:
             return 'Strong Buy', round(signal_score, 2)
         elif signal_score >= 1.0:
@@ -540,13 +490,11 @@ def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamen
         logger.error(f"Error in signal generation: {str(e)}")
         return 'Neutral', 0.0
 
-# ================= STOCK ANALYSIS =================
 def analyze_stock(symbol, data_source="twelve_data"):
-    """Analyze a single stock and return structured JSON data with daily and weekly timeframes"""
+    """Analyze a single stock and return structured JSON data"""
     try:
         logger.info(f"Starting analysis for {symbol} using {data_source}")
         
-        # Fetch both daily and weekly data
         daily_data = fetch_stock_data(symbol, "1day", 100, data_source)
         weekly_data = fetch_stock_data(symbol, "1week", 50, data_source)
         
@@ -554,17 +502,14 @@ def analyze_stock(symbol, data_source="twelve_data"):
             logger.error(f"No data available for {symbol}")
             return None
         
-        # Analyze daily timeframe
         daily_analysis = None
         if not daily_data.empty:
             daily_analysis = analyze_timeframe(daily_data, symbol, "DAILY")
         
-        # Analyze weekly timeframe
         weekly_analysis = None
         if not weekly_data.empty:
             weekly_analysis = analyze_timeframe(weekly_data, symbol, "WEEKLY")
         
-        # Structure the response
         result = {
             symbol: {
                 'data_source': data_source
@@ -587,36 +532,29 @@ def analyze_stock(symbol, data_source="twelve_data"):
 def analyze_timeframe(data, symbol, timeframe):
     """Analyze a specific timeframe and return structured data"""
     try:
-        # Convert to Heikin-Ashi
         ha_data = heikin_ashi(data)
         if ha_data.empty:
             logger.error(f"Failed to convert to HA for {symbol} {timeframe}")
             return None
         
-        # Calculate indicators
         indicators_data = calculate_ha_indicators(ha_data)
         if indicators_data is None:
             logger.error(f"Failed to calculate indicators for {symbol} {timeframe}")
             return None
         
-        # Detect patterns
         pivots = detect_zigzag_pivots(ha_data)
         patterns, _ = detect_geometric_patterns(ha_data, pivots)
         waves = detect_elliott_waves(pivots, ha_data['HA_Close'])
         confluence = detect_confluence(ha_data, pivots)
         
-        # Generate cycle analysis
         cycle_analysis = generate_cycle_analysis(indicators_data, symbol)
         
-        # Get fundamental and sentiment data
         fundamentals = get_fundamental_data(symbol)
         sentiment = get_market_sentiment(symbol)
         
-        # Generate signals
         last_indicators = indicators_data.iloc[-1].to_dict()
         signal, score = generate_smc_signals(patterns, last_indicators, confluence, waves, fundamentals, sentiment)
         
-        # Calculate prices and targets
         current_price = round(ha_data['HA_Close'].iloc[-1], 2)
         
         if 'Buy' in signal:
@@ -628,7 +566,6 @@ def analyze_timeframe(data, symbol, timeframe):
             targets = [round(current_price * 0.95, 2), round(current_price * 0.90, 2)]
             stop_loss = round(current_price * 1.05, 2)
         
-        # Calculate price changes
         change_1d = 0.0
         change_1w = 0.0
         
@@ -638,7 +575,6 @@ def analyze_timeframe(data, symbol, timeframe):
         if len(ha_data) >= 5:
             change_1w = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-5] - 1) * 100, 2)
         
-        # Calculate individual indicator verdicts
         rsi_verdict = "Overbought" if last_indicators.get('RSI', 50) > 70 else "Oversold" if last_indicators.get('RSI', 50) < 30 else "Neutral"
         adx_verdict = "Strong Trend" if last_indicators.get('ADX', 25) > 25 else "Weak Trend"
         momentum_verdict = "Bullish" if last_indicators.get('Cycle_Momentum', 0) > 0.02 else "Bearish" if last_indicators.get('Cycle_Momentum', 0) < -0.02 else "Neutral"
@@ -647,7 +583,6 @@ def analyze_timeframe(data, symbol, timeframe):
         fundamental_verdict = "Undervalued" if pe_ratio < 20 else "Overvalued" if pe_ratio > 30 else "Fair Value"
         sentiment_verdict = "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral"
         
-        # Structure timeframe response
         timeframe_analysis = {
             'PRICE': current_price,
             'ACCURACY': min(95, max(60, abs(score) * 20 + 60)),
@@ -709,9 +644,8 @@ def analyze_timeframe(data, symbol, timeframe):
         logger.error(f"Error analyzing {timeframe} timeframe for {symbol}: {str(e)}")
         return None
 
-# ================= MAIN EXECUTION =================
 def analyze_all_stocks():
-    """Analyze stocks and return JSON response, using both data sources with proper rate limiting."""
+    """Analyze stocks and return JSON response"""
     try:
         stock_config = get_filtered_stocks(20)
         twelve_data_stocks = stock_config['twelve_data']
@@ -719,7 +653,7 @@ def analyze_all_stocks():
         
         results = {}
         
-        logger.info(f"Starting analysis of 20 stocks:")
+        logger.info(f"Starting analysis of 20 stocks")
         logger.info(f"Twelve Data stocks (15): {twelve_data_stocks}")
         logger.info(f"yfinance stocks (5): {yfinance_stocks}")
         
@@ -746,12 +680,11 @@ def analyze_all_stocks():
                     except Exception as e:
                         logger.error(f"Error processing {symbol} (Twelve Data): {str(e)}")
                 
-                # Sleep between batches (except for the last batch)
                 if batch_idx < num_batches - 1:
                     logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s to respect Twelve Data rate limit...")
                     time.sleep(TWELVE_DATA_BATCH_SLEEP)
         
-        # Process yfinance stocks (no batching needed, more lenient rate limits)
+        # Process yfinance stocks
         if yfinance_stocks:
             logger.info(f"Processing yfinance stocks: {yfinance_stocks}")
             for symbol in yfinance_stocks:
@@ -765,7 +698,6 @@ def analyze_all_stocks():
                 except Exception as e:
                     logger.error(f"Error processing {symbol} (yfinance): {str(e)}")
         
-        # Add metadata
         response = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': len(results),
@@ -774,13 +706,10 @@ def analyze_all_stocks():
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
                 'yfinance_count': len([k for k, v in results.items() if v.get('data_source') == 'yfinance'])
             },
-            **results  # Spread the stock results at the top level
+            **results
         }
         
         logger.info(f"Analysis complete. Processed {len(results)} stocks successfully.")
-        logger.info(f"Twelve Data: {response['data_sources']['twelve_data_count']} stocks")
-        logger.info(f"yfinance: {response['data_sources']['yfinance_count']} stocks")
-        
         return response
         
     except Exception as e:
@@ -792,86 +721,101 @@ def analyze_all_stocks():
             'error': str(e)
         }
 
-# ================= FLASK APP =================
-app = Flask(__name__)
+# ================= FLASK ROUTES =================
 
-# Enable CORS for all routes
-CORS(app, origins=["*"], methods=["GET", "POST", "OPTIONS"], allow_headers=["*"])
-
-@app.route('/analyze', methods=['GET', 'OPTIONS'])
-def analyze():
-    """API endpoint to analyze stocks and return JSON response"""
-    if request.method == 'OPTIONS':
-        # Handle preflight request
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
         response = make_response()
         response.headers.add("Access-Control-Allow-Origin", "*")
         response.headers.add('Access-Control-Allow-Headers', "*")
         response.headers.add('Access-Control-Allow-Methods', "*")
         return response
-    
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/', methods=['GET'])
+@cross_origin()
+def home():
+    """Home endpoint"""
     try:
+        return jsonify({
+            'message': 'Stock Analysis API is running',
+            'endpoints': {
+                '/analyze': 'GET - Analyze stocks and return trading signals',
+                '/health': 'GET - Health check',
+                '/': 'GET - This help message'
+            },
+            'data_sources': {
+                'twelve_data': 'First 15 stocks',
+                'yfinance': 'Last 5 stocks'
+            },
+            'status': 'online',
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        logger.error(f"Error in home endpoint: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/health', methods=['GET'])
+@cross_origin()
+def health():
+    """Health check endpoint"""
+    try:
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'service': 'Stock Analysis API'
+        })
+    except Exception as e:
+        logger.error(f"Error in health endpoint: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/analyze', methods=['GET'])
+@cross_origin()
+def analyze():
+    """API endpoint to analyze stocks and return JSON response"""
+    try:
+        logger.info("Starting stock analysis...")
         json_response = analyze_all_stocks()
-        response = jsonify(json_response)
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        return response
+        logger.info(f"Analysis completed. Status: {json_response.get('status')}")
+        return jsonify(json_response)
     except Exception as e:
         logger.error(f"Error in /analyze endpoint: {str(e)}")
-        error_response = jsonify({
+        return jsonify({
             'error': f"Failed to analyze stocks: {str(e)}",
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': 0,
             'status': 'error'
-        })
-        error_response.headers.add('Access-Control-Allow-Origin', '*')
-        return error_response, 500
+        }), 500
 
-@app.route('/', methods=['GET'])
-def home():
-    """Home endpoint"""
-    response = jsonify({
-        'message': 'Stock Analysis API is running',
-        'demo_url': DEMO_API_URL,
-        'endpoints': {
-            '/analyze': 'GET - Analyze stocks and return trading signals',
-            '/': 'GET - This help message'
-        },
-        'data_sources': {
-            'twelve_data': 'First 15 stocks',
-            'yfinance': 'Last 5 stocks'
-        },
-        'status': 'online'
-    })
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    return response
-
-# Health check endpoint
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    response = jsonify({
-        'status': 'healthy',
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        'error': 'Endpoint not found',
+        'message': 'The requested URL was not found on the server',
+        'available_endpoints': ['/analyze', '/health', '/'],
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    })
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    return response
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        'error': 'Internal server error',
+        'message': 'An internal error occurred',
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }), 500
 
 if __name__ == "__main__":
-    try:
-        # Test the analysis function
-        print("Testing stock analysis...")
-        json_response = analyze_all_stocks()
-        print(f"Analysis complete. Processed {json_response.get('stocks_analyzed', 0)} stocks.")
-        
-        # Start Flask app
-        print(f"\nStarting Flask server with CORS enabled...")
-        print(f"Demo URL: {DEMO_API_URL}")
-        print("Available endpoints:")
-        print("  - GET /analyze - Analyze all stocks")
-        print("  - GET / - API information")
-        print("  - GET /health - Health check")
-        
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
-        
-    except Exception as e:
-        logger.error(f"Main execution failed: {str(e)}")
-        print(f"Main execution failed: {str(e)}")
+    port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("FLASK_ENV") == "development"
+    
+    logger.info(f"Starting Flask server on port {port}")
+    logger.info(f"Debug mode: {debug_mode}")
+    
+    app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
