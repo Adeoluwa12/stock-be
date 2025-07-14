@@ -71,7 +71,7 @@ app = Flask(__name__)
 # Simple CORS configuration - avoid conflicts
 CORS(app, resources={
     r"/*": {
-        "origins": "*",
+        "origins": "*", "http://localhost:5177"
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
