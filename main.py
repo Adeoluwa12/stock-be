@@ -8,8 +8,8 @@ import warnings
 from datetime import datetime, timedelta
 import json
 from sklearn.linear_model import LinearRegression
-from flask import Flask, jsonify, request, make_response
-from flask_cors import CORS, cross_origin
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 import logging
 import time
 import requests
@@ -68,15 +68,14 @@ logger = logging.getLogger(__name__)
 # ================= FLASK APP SETUP =================
 app = Flask(__name__)
 
-# Configure CORS with explicit settings
-CORS(app, 
-     origins=["*"],
-     methods=["GET", "POST", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
-     supports_credentials=True)
-
-# Additional CORS configuration
-app.config['CORS_HEADERS'] = 'Content-Type'
+# Simple CORS configuration - avoid conflicts
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # ================= DATA FUNCTIONS =================
 def get_filtered_stocks(num_stocks=20):
@@ -723,24 +722,7 @@ def analyze_all_stocks():
 
 # ================= FLASK ROUTES =================
 
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add('Access-Control-Allow-Headers', "*")
-        response.headers.add('Access-Control-Allow-Methods', "*")
-        return response
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
 @app.route('/', methods=['GET'])
-@cross_origin()
 def home():
     """Home endpoint"""
     try:
@@ -763,7 +745,6 @@ def home():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
-@cross_origin()
 def health():
     """Health check endpoint"""
     try:
@@ -777,7 +758,6 @@ def health():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/analyze', methods=['GET'])
-@cross_origin()
 def analyze():
     """API endpoint to analyze stocks and return JSON response"""
     try:
