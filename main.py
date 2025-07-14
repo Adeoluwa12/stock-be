@@ -71,12 +71,9 @@ app = Flask(__name__)
 # Simple CORS configuration - avoid conflicts
 CORS(app, resources={
     r"/*": {
-        "origins": "*", "http://localhost:5177"
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
+        "origins": ["*", "http://localhost:5177", "https://your-frontend-domain.com"]  # Add your frontend's deployed URL
     }
 })
-
 # ================= DATA FUNCTIONS =================
 def get_filtered_stocks(num_stocks=20):
     """Get list of stocks to analyze - split between Twelve Data and yfinance"""
