@@ -71,7 +71,7 @@ app = Flask(__name__)
 # Simple CORS configuration - avoid conflicts
 CORS(app, resources={
     r"/*": {
-        "origins": ["*", "http://localhost:5177", "https://your-frontend-domain.com"]  # Add your frontend's deployed URL
+        "origins": ["*", "http://localhost:5177", "https://my-stocks-s2at.onrender.com"]  # Add your frontend's deployed URL
     }
 })
 # ================= DATA FUNCTIONS =================
