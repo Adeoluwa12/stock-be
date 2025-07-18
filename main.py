@@ -1878,14 +1878,9 @@ import time
 import requests
 import math
 import os
-from threading import Lock, Thread
+from threading import Lock
 import queue
 import anthropic
-import sqlite3
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pickle
-import threading
 
 warnings.filterwarnings('ignore')
 
@@ -1894,10 +1889,6 @@ TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
 ALPHA_VANTAGE_API_KEY = "AK656KG03APJM5ZC"  # Add your Alpha Vantage key
 CLAUDE_API_KEY = "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"  # Add your Claude API key
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
-
-# Database configuration
-DATABASE_PATH = "stock_analysis.db"
-ANALYSIS_CACHE_FILE = "latest_analysis.json"
 
 RISK_FREE_RATE = 0.02
 MAX_WORKERS = 2
@@ -1926,17 +1917,16 @@ FUNDAMENTAL_WEIGHT = 0.3
 SENTIMENT_WEIGHT = 0.2
 TECHNICAL_WEIGHT = 0.5
 
-# Enhanced Rate limiting configuration - Fixed for CoinGecko
+# Enhanced Rate limiting configuration - Optimized for speed
 TWELVE_DATA_RATE_LIMIT_PER_MIN = 8
 TWELVE_DATA_BATCH_SIZE = 4
-TWELVE_DATA_BATCH_SLEEP = 45
-TWELVE_DATA_RETRY_ATTEMPTS = 2
-TWELVE_DATA_RETRY_DELAY = 15
-ALPHA_VANTAGE_BATCH_SIZE = 2  # Alpha Vantage: 5 calls per minute
-ALPHA_VANTAGE_DELAY = 15  # 15 seconds between calls
-COINGECKO_BATCH_SIZE = 3  # Reduced batch size
-COINGECKO_DELAY = 10.0  # Increased delay to avoid rate limits
-COINGECKO_RETRY_DELAY = 30
+TWELVE_DATA_BATCH_SLEEP = 45  # Reduced sleep time
+TWELVE_DATA_RETRY_ATTEMPTS = 2  # Reduced retries
+TWELVE_DATA_RETRY_DELAY = 15  # Reduced delay
+ALPHA_VANTAGE_BATCH_SIZE = 3
+ALPHA_VANTAGE_DELAY = 12  # Alpha Vantage has 5 calls per minute limit
+COINGECKO_BATCH_SIZE = 10
+COINGECKO_DELAY = 1.0
 
 # Global rate limiting
 rate_limit_lock = Lock()
@@ -1945,10 +1935,6 @@ last_alpha_vantage_request = 0
 last_coingecko_request = 0
 request_count_twelve_data = 0
 request_count_alpha_vantage = 0
-
-# Background processing
-analysis_in_progress = False
-analysis_lock = threading.Lock()
 
 # Setup logging
 logging.basicConfig(
@@ -1971,158 +1957,11 @@ CORS(app, resources={
 # Initialize Claude client
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY != "YOUR_CLAUDE_API_KEY" else None
 
-# Initialize scheduler
-scheduler = BackgroundScheduler()
-
-# ================= DATABASE SETUP =================
-def init_database():
-    """Initialize SQLite database for persistent storage"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            market TEXT NOT NULL,
-            data_source TEXT NOT NULL,
-            analysis_data TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(symbol) ON CONFLICT REPLACE
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_metadata (
-            id INTEGER PRIMARY KEY,
-            total_analyzed INTEGER,
-            success_rate REAL,
-            last_update DATETIME,
-            status TEXT,
-            processing_time_minutes REAL
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized successfully")
-
-def save_analysis_to_db(results):
-    """Save analysis results to database"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    try:
-        # Save individual stock results
-        for symbol, data in results.items():
-            if symbol not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO analysis_results 
-                    (symbol, market, data_source, analysis_data) 
-                    VALUES (?, ?, ?, ?)
-                ''', (
-                    symbol,
-                    data.get('market', 'Unknown'),
-                    data.get('data_source', 'Unknown'),
-                    json.dumps(data)
-                ))
-        
-        # Save metadata
-        cursor.execute('''
-            INSERT OR REPLACE INTO analysis_metadata 
-            (id, total_analyzed, success_rate, last_update, status, processing_time_minutes) 
-            VALUES (1, ?, ?, ?, ?, ?)
-        ''', (
-            results.get('stocks_analyzed', 0),
-            results.get('success_rate', 0),
-            datetime.now().isoformat(),
-            results.get('status', 'unknown'),
-            results.get('processing_time_minutes', 0)
-        ))
-        
-        conn.commit()
-        logger.info(f"Saved {len([k for k in results.keys() if k not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']])} analysis results to database")
-        
-    except Exception as e:
-        logger.error(f"Error saving to database: {str(e)}")
-        conn.rollback()
-    finally:
-        conn.close()
-
-def load_analysis_from_db():
-    """Load latest analysis results from database"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    try:
-        # Get metadata
-        cursor.execute('SELECT * FROM analysis_metadata WHERE id = 1')
-        metadata = cursor.fetchone()
-        
-        if not metadata:
-            return None
-        
-        # Get all stock results
-        cursor.execute('SELECT symbol, analysis_data FROM analysis_results ORDER BY timestamp DESC')
-        stock_results = cursor.fetchall()
-        
-        if not stock_results:
-            return None
-        
-        # Reconstruct response format
-        response = {
-            'timestamp': metadata[3],  # last_update
-            'stocks_analyzed': metadata[1],  # total_analyzed
-            'success_rate': metadata[2],  # success_rate
-            'status': metadata[4],  # status
-            'processing_time_minutes': metadata[5],  # processing_time_minutes
-            'data_source': 'database_cache',
-            'markets': {'us_stocks': 0, 'nigerian_stocks': 0, 'crypto_assets': 0},
-            'data_sources': {'twelve_data_count': 0, 'alpha_vantage_count': 0, 'coingecko_count': 0}
-        }
-        
-        # Add stock data
-        for symbol, analysis_json in stock_results:
-            try:
-                analysis_data = json.loads(analysis_json)
-                response[symbol] = analysis_data
-                
-                # Count by market
-                market = analysis_data.get('market', 'Unknown')
-                if market == 'US':
-                    response['markets']['us_stocks'] += 1
-                elif market == 'Nigerian':
-                    response['markets']['nigerian_stocks'] += 1
-                elif market == 'Crypto':
-                    response['markets']['crypto_assets'] += 1
-                
-                # Count by data source
-                data_source = analysis_data.get('data_source', 'Unknown')
-                if data_source == 'twelve_data':
-                    response['data_sources']['twelve_data_count'] += 1
-                elif data_source == 'alpha_vantage':
-                    response['data_sources']['alpha_vantage_count'] += 1
-                elif data_source == 'coingecko':
-                    response['data_sources']['coingecko_count'] += 1
-                    
-            except json.JSONDecodeError:
-                logger.error(f"Error parsing analysis data for {symbol}")
-                continue
-        
-        logger.info(f"Loaded {len(stock_results)} analysis results from database")
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error loading from database: {str(e)}")
-        return None
-    finally:
-        conn.close()
-
 # ================= ENHANCED STOCK CONFIGURATION =================
-def get_filtered_stocks(num_stocks=70):
-    """Get optimized list of stocks with Alpha Vantage for Nigerian stocks"""
+def get_filtered_stocks(num_stocks=85):
+    """Get optimized list of stocks - US stocks + Major Nigerian stocks + Major Cryptos"""
     
-    # US Stocks (25) - Use Twelve Data
+    # US Stocks (25) - Top performers and blue chips
     us_stocks = [
         "AAPL", "GOOGL", "MSFT", "TSLA", "AMZN",
         "NVDA", "META", "NFLX", "AMD", "INTC",
@@ -2131,7 +1970,7 @@ def get_filtered_stocks(num_stocks=70):
         "JNJ", "V", "MA", "BABA", "ORCL"
     ]
     
-    # Major Nigerian Stocks (30) - Use Alpha Vantage or simulated data
+    # Major Nigerian Stocks (40) - Only the most liquid and significant
     major_nigerian_stocks = [
         # Top Banks
         "ACCESS.NG", "FBNH.NG", "GTCO.NG", "UBA.NG", "ZENITHBANK.NG",
@@ -2150,27 +1989,38 @@ def get_filtered_stocks(num_stocks=70):
         # Major Conglomerates
         "TRANSCORP.NG", "UACN.NG", "SCOA.NG",
         
-        # Top Insurance & Others
-        "AIICO.NG", "NEM.NG", "MTNN.NG"
+        # Top Insurance
+        "AIICO.NG", "NEM.NG", "MANSARD.NG",
+        
+        # Agriculture Leaders
+        "OKOMUOIL.NG", "PRESCO.NG",
+        
+        # Telecom/ICT
+        "MTNN.NG",
+        
+        # Others
+        "BUAFOODS.NG", "JBERGER.NG", "VITAFOAM.NG", "CUTIX.NG",
+        "LIVESTOCK.NG", "CHAMPION.NG", "FIDSON.NG"
     ]
     
-    # Major Cryptocurrencies (15) - Reduced for better rate limiting
+    # Major Cryptocurrencies (20) - Top market cap cryptos
     major_cryptos = [
         "bitcoin", "ethereum", "binancecoin", "solana", "cardano",
         "avalanche-2", "polkadot", "chainlink", "polygon", "litecoin",
-        "near", "uniswap", "cosmos", "algorand", "stellar"
+        "near", "uniswap", "cosmos", "algorand", "stellar",
+        "vechain", "filecoin", "tron", "monero", "ethereum-classic"
     ]
     
-    # Data source distribution
-    twelve_data_stocks = us_stocks  # US stocks via Twelve Data
-    alpha_vantage_stocks = major_nigerian_stocks  # Nigerian stocks via Alpha Vantage
+    # Distribution for faster processing
+    twelve_data_stocks = us_stocks  # All US stocks via Twelve Data
+    twelve_data_nigerian = major_nigerian_stocks  # Nigerian stocks via Twelve Data
     coingecko_cryptos = major_cryptos  # Cryptos via CoinGecko
     
     all_stocks = us_stocks + major_nigerian_stocks
     
     return {
         'twelve_data_us': twelve_data_stocks,
-        'alpha_vantage_nigerian': alpha_vantage_stocks,
+        'twelve_data_nigerian': twelve_data_nigerian,
         'coingecko_cryptos': coingecko_cryptos,
         'all_traditional': all_stocks,
         'us_stocks': us_stocks,
@@ -2201,20 +2051,6 @@ def wait_for_rate_limit_twelve_data():
         
         request_count_twelve_data += 1
 
-def wait_for_rate_limit_yfinance():
-    """Rate limiting for yfinance (Nigerian stocks)"""
-    global last_yfinance_request
-    
-    with rate_limit_lock:
-        current_time = time.time()
-        time_since_last = current_time - last_yfinance_request
-        
-        if time_since_last < YFINANCE_DELAY:
-            sleep_time = YFINANCE_DELAY - time_since_last
-            time.sleep(sleep_time)
-        
-        last_yfinance_request = time.time()
-
 def wait_for_rate_limit_alpha_vantage():
     """Rate limiting for Alpha Vantage API"""
     global last_alpha_vantage_request, request_count_alpha_vantage
@@ -2231,7 +2067,7 @@ def wait_for_rate_limit_alpha_vantage():
         request_count_alpha_vantage += 1
 
 def wait_for_rate_limit_coingecko():
-    """Enhanced rate limiting for CoinGecko API"""
+    """Rate limiting for CoinGecko API"""
     global last_coingecko_request
     
     with rate_limit_lock:
@@ -2240,14 +2076,13 @@ def wait_for_rate_limit_coingecko():
         
         if time_since_last < COINGECKO_DELAY:
             sleep_time = COINGECKO_DELAY - time_since_last
-            logger.info(f"CoinGecko rate limiting: sleeping {sleep_time:.1f}s")
             time.sleep(sleep_time)
         
         last_coingecko_request = time.time()
 
 # ================= ENHANCED DATA FETCHING =================
 def fetch_stock_data_twelve_with_retry(symbol, interval="1day", outputsize=100, max_retries=TWELVE_DATA_RETRY_ATTEMPTS):
-    """Enhanced Twelve Data fetching"""
+    """Enhanced Twelve Data fetching with multiple timeframes"""
     for attempt in range(max_retries):
         try:
             wait_for_rate_limit_twelve_data()
@@ -2313,146 +2148,69 @@ def fetch_stock_data_twelve_with_retry(symbol, interval="1day", outputsize=100, 
     
     return pd.DataFrame()
 
-def fetch_nigerian_stock_data_alpha_vantage(symbol, function="TIME_SERIES_DAILY", outputsize="compact"):
-    """Fetch Nigerian stock data from Alpha Vantage or generate simulated data"""
+def fetch_crypto_data_coingecko(crypto_id, days=100):
+    """Fetch crypto data from CoinGecko"""
     try:
-        wait_for_rate_limit_alpha_vantage()
+        wait_for_rate_limit_coingecko()
         
-        # For now, generate simulated data for Nigerian stocks since Alpha Vantage may not support them
-        # In production, you would try Alpha Vantage first, then fall back to simulation
-        logger.info(f"Generating simulated data for Nigerian stock {symbol}")
-        
-        # Generate realistic Nigerian stock data
-        dates = pd.date_range(end=datetime.now(), periods=100, freq='D')
-        dates = dates[dates.weekday < 5]  # Remove weekends
-        
-        # Base price for different Nigerian stocks
-        base_prices = {
-            'ACCESS.NG': 12.50, 'FBNH.NG': 8.30, 'GTCO.NG': 25.40, 'UBA.NG': 7.85, 'ZENITHBANK.NG': 22.10,
-            'DANGCEM.NG': 245.50, 'BUACEMENT.NG': 85.20, 'NESTLE.NG': 1250.00, 'UNILEVER.NG': 14.50,
-            'SEPLAT.NG': 850.00, 'TOTAL.NG': 165.30, 'TRANSCORP.NG': 4.25, 'MTNN.NG': 185.50
+        url = f"{COINGECKO_BASE_URL}/coins/{crypto_id}/market_chart"
+        params = {
+            'vs_currency': 'usd',
+            'days': days,
+            'interval': 'daily'
         }
         
-        base_price = base_prices.get(symbol, 50.0)
+        logger.info(f"Fetching {crypto_id} from CoinGecko")
         
-        # Generate price data with realistic volatility
-        np.random.seed(hash(symbol) % 2**32)  # Consistent seed per symbol
-        returns = np.random.normal(0.001, 0.025, len(dates))  # Nigerian market volatility
-        prices = [base_price]
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
         
-        for ret in returns[1:]:
-            new_price = prices[-1] * (1 + ret)
-            prices.append(max(new_price, 0.01))  # Prevent negative prices
+        data = response.json()
         
-        # Create OHLCV data
-        data = []
-        for i, (date, close) in enumerate(zip(dates, prices)):
-            high = close * random.uniform(1.001, 1.03)
-            low = close * random.uniform(0.97, 0.999)
-            open_price = prices[i-1] * random.uniform(0.99, 1.01) if i > 0 else close
-            volume = random.randint(100000, 5000000)
+        if 'prices' not in data:
+            logger.error(f"No price data for {crypto_id}")
+            return pd.DataFrame()
+        
+        prices = data['prices']
+        volumes = data.get('total_volumes', [])
+        
+        df_data = []
+        for i, price_point in enumerate(prices):
+            timestamp = pd.to_datetime(price_point[0], unit='ms')
+            price = price_point[1]
+            volume = volumes[i][1] if i < len(volumes) else 0
             
-            data.append({
-                'datetime': date,
-                'open': round(open_price, 2),
-                'high': round(high, 2),
-                'low': round(low, 2),
-                'close': round(close, 2),
+            df_data.append({
+                'datetime': timestamp,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price,
                 'volume': volume
             })
         
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(df_data)
         df.set_index('datetime', inplace=True)
         df.sort_index(inplace=True)
         
-        logger.info(f"Generated {len(df)} rows of simulated data for {symbol}")
+        logger.info(f"Successfully fetched {len(df)} rows for {crypto_id} from CoinGecko")
         return df
         
     except Exception as e:
-        logger.error(f"Error generating data for Nigerian stock {symbol}: {str(e)}")
+        logger.error(f"Error fetching crypto data for {crypto_id}: {str(e)}")
         return pd.DataFrame()
-
-def fetch_crypto_data_coingecko_with_retry(crypto_id, days=100, max_retries=3):
-    """Fetch crypto data from CoinGecko with enhanced retry logic"""
-    for attempt in range(max_retries):
-        try:
-            wait_for_rate_limit_coingecko()
-            
-            url = f"{COINGECKO_BASE_URL}/coins/{crypto_id}/market_chart"
-            params = {
-                'vs_currency': 'usd',
-                'days': days,
-                'interval': 'daily'
-            }
-            
-            logger.info(f"Fetching {crypto_id} from CoinGecko (attempt {attempt + 1}/{max_retries})")
-            
-            response = requests.get(url, params=params, timeout=20)
-            
-            if response.status_code == 429:  # Rate limited
-                logger.warning(f"Rate limited for {crypto_id}, waiting {COINGECKO_RETRY_DELAY}s...")
-                time.sleep(COINGECKO_RETRY_DELAY)
-                continue
-            
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'prices' not in data:
-                logger.error(f"No price data for {crypto_id}")
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                return pd.DataFrame()
-            
-            prices = data['prices']
-            volumes = data.get('total_volumes', [])
-            
-            df_data = []
-            for i, price_point in enumerate(prices):
-                timestamp = pd.to_datetime(price_point[0], unit='ms')
-                price = price_point[1]
-                volume = volumes[i][1] if i < len(volumes) else 0
-                
-                df_data.append({
-                    'datetime': timestamp,
-                    'open': price,
-                    'high': price,
-                    'low': price,
-                    'close': price,
-                    'volume': volume
-                })
-            
-            df = pd.DataFrame(df_data)
-            df.set_index('datetime', inplace=True)
-            df.sort_index(inplace=True)
-            
-            logger.info(f"Successfully fetched {len(df)} rows for {crypto_id} from CoinGecko")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error fetching crypto data for {crypto_id} (attempt {attempt + 1}): {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(COINGECKO_RETRY_DELAY)
-            else:
-                return pd.DataFrame()
-    
-    return pd.DataFrame()
 
 def fetch_stock_data(symbol, interval="1day", outputsize=100, source="twelve_data"):
     """Unified function to fetch data from multiple sources"""
     if source == "twelve_data":
         return fetch_stock_data_twelve_with_retry(symbol, interval, outputsize)
-    elif source == "alpha_vantage":
-        # For Nigerian stocks, use simulated data for now
-        return fetch_nigerian_stock_data_alpha_vantage(symbol)
     elif source == "coingecko":
-        return fetch_crypto_data_coingecko_with_retry(symbol, outputsize)
+        return fetch_crypto_data_coingecko(symbol, outputsize)
     else:
         logger.error(f"Unknown data source: {source}")
         return pd.DataFrame()
 
-# ================= EXISTING ANALYSIS FUNCTIONS (KEEP ALL UNCHANGED) =================
+# ================= EXISTING ANALYSIS FUNCTIONS (ENHANCED) =================
 def heikin_ashi(df):
     """Convert dataframe to Heikin-Ashi candles with proper error handling"""
     if df.empty:
@@ -2483,6 +2241,10 @@ def heikin_ashi(df):
     except Exception as e:
         logger.error(f"Error in heikin_ashi calculation: {str(e)}")
         return pd.DataFrame()
+
+# [Keep all existing analysis functions: detect_zigzag_pivots, calculate_ha_indicators, 
+# detect_geometric_patterns, detect_elliott_waves, detect_confluence, generate_cycle_analysis,
+# get_fundamental_data, get_market_sentiment, generate_smc_signals - they remain the same]
 
 def detect_zigzag_pivots(data):
     """Detect significant pivot points using zigzag algorithm"""
@@ -2694,6 +2456,7 @@ def generate_cycle_analysis(df, symbol):
 
 def get_fundamental_data(symbol):
     """Get fundamental data with crypto support"""
+    # Enhanced with crypto data
     pe_ratios = {
         # US Stocks
         'AAPL': 28.5, 'MSFT': 32.1, 'TSLA': 45.2, 'GOOGL': 24.8, 'AMZN': 38.9,
@@ -2711,16 +2474,17 @@ def get_fundamental_data(symbol):
         # Nigerian Industrial
         'DANGCEM.NG': 19.2, 'BUACEMENT.NG': 16.8, 'WAPCO.NG': 15.5,
         
-        # Cryptos
+        # Cryptos (using market cap rank as proxy)
         'bitcoin': 0, 'ethereum': 0, 'binancecoin': 0, 'solana': 0, 'cardano': 0
     }
     
+    # Determine asset type
     is_nigerian = symbol.endswith('.NG')
-    is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar']
+    is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar', 'vechain', 'filecoin', 'tron', 'monero', 'ethereum-classic']
     
     if is_crypto:
         return {
-            'PE_Ratio': 0,
+            'PE_Ratio': 0,  # N/A for crypto
             'Market_Cap_Rank': random.randint(1, 100),
             'Adoption_Score': random.uniform(0.6, 0.95),
             'Technology_Score': random.uniform(0.7, 0.98)
@@ -2749,11 +2513,12 @@ def get_market_sentiment(symbol):
         'bitcoin': 0.78, 'ethereum': 0.82, 'binancecoin': 0.65, 'solana': 0.75, 'cardano': 0.58
     }
     
+    # Default sentiment based on asset type
     is_nigerian = symbol.endswith('.NG')
-    is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar']
+    is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar', 'vechain', 'filecoin', 'tron', 'monero', 'ethereum-classic']
     
     if is_crypto:
-        default_sentiment = 0.6
+        default_sentiment = 0.6  # Generally positive for major cryptos
     elif is_nigerian:
         default_sentiment = 0.45
     else:
@@ -2784,14 +2549,15 @@ def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamen
         elif 'RSI' in indicators and indicators['RSI'] > 70:
             signal_score -= 0.5
         
+        # Handle both traditional stocks and crypto
         if 'PE_Ratio' in fundamentals:
             pe_ratio = fundamentals['PE_Ratio']
-            if pe_ratio > 0:
+            if pe_ratio > 0:  # Traditional stocks
                 if pe_ratio < 15:
                     signal_score += 0.5
                 elif pe_ratio > 30:
                     signal_score -= 0.5
-        elif 'Market_Cap_Rank' in fundamentals:
+        elif 'Market_Cap_Rank' in fundamentals:  # Crypto
             if fundamentals['Market_Cap_Rank'] <= 10:
                 signal_score += 0.3
             if fundamentals['Adoption_Score'] > 0.8:
@@ -2820,6 +2586,7 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
     try:
         logger.info(f"Starting hierarchical analysis for {symbol} using {data_source}")
         
+        # Fetch data for all timeframes
         timeframes = {
             'monthly': ('1month', 24),
             'weekly': ('1week', 52),
@@ -2830,6 +2597,7 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
         timeframe_data = {}
         for tf_name, (interval, size) in timeframes.items():
             if data_source == "coingecko":
+                # CoinGecko doesn't support different intervals, use daily and resample
                 data = fetch_stock_data(symbol, "1day", size * 7, data_source)
                 if not data.empty and tf_name != 'daily':
                     if tf_name == 'monthly':
@@ -2840,20 +2608,8 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
                         data = data.resample('W').agg({
                             'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
                         }).dropna()
-            elif data_source == "alpha_vantage":
-                # For Nigerian stocks, use daily data and resample
-                data = fetch_stock_data(symbol, "1day", 100, data_source)
-                if not data.empty and tf_name != 'daily':
-                    if tf_name == 'monthly':
-                        data = data.resample('M').agg({
-                            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-                        }).dropna()
-                    elif tf_name == 'weekly':
-                        data = data.resample('W').agg({
-                            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-                        }).dropna()
                     elif tf_name == '4hour':
-                        # Use daily data as proxy for 4-hour
+                        # For crypto, use daily as 4-hour proxy
                         pass
             else:
                 data = fetch_stock_data(symbol, interval, size, data_source)
@@ -2865,12 +2621,14 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
             logger.error(f"No data available for {symbol}")
             return None
         
+        # Analyze each timeframe
         analyses = {}
         for tf_name, data in timeframe_data.items():
             analysis = analyze_timeframe_enhanced(data, symbol, tf_name.upper())
             if analysis:
-                analyses[f"{tf_name.UPPER()}_TIMEFRAME"] = analysis
+                analyses[f"{tf_name.upper()}_TIMEFRAME"] = analysis
         
+        # Apply hierarchical logic
         final_analysis = apply_hierarchical_logic(analyses, symbol)
         
         result = {
@@ -2891,31 +2649,37 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
 def apply_hierarchical_logic(analyses, symbol):
     """Apply hierarchical logic where daily depends on weekly/monthly"""
     try:
+        # Get timeframe analyses
         monthly = analyses.get('MONTHLY_TIMEFRAME')
         weekly = analyses.get('WEEKLY_TIMEFRAME')
         daily = analyses.get('DAILY_TIMEFRAME')
         four_hour = analyses.get('4HOUR_TIMEFRAME')
         
+        # Apply hierarchical weighting
         if daily and weekly and monthly:
+            # Monthly trend has highest weight
             monthly_weight = 0.4
             weekly_weight = 0.3
             daily_weight = 0.2
             four_hour_weight = 0.1
             
+            # Calculate weighted confidence
             monthly_conf = monthly['CONFIDENCE_SCORE'] * monthly_weight
             weekly_conf = weekly['CONFIDENCE_SCORE'] * weekly_weight
             daily_conf = daily['CONFIDENCE_SCORE'] * daily_weight
             four_hour_conf = four_hour['CONFIDENCE_SCORE'] * four_hour_weight if four_hour else 0
             
+            # Determine overall verdict based on hierarchy
             if monthly['VERDICT'] in ['Strong Buy', 'Buy'] and weekly['VERDICT'] in ['Strong Buy', 'Buy']:
                 if daily['VERDICT'] in ['Sell', 'Strong Sell']:
-                    daily['VERDICT'] = 'Buy'
+                    daily['VERDICT'] = 'Buy'  # Override daily with higher timeframe
                     daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bullish Override'
             elif monthly['VERDICT'] in ['Strong Sell', 'Sell'] and weekly['VERDICT'] in ['Strong Sell', 'Sell']:
                 if daily['VERDICT'] in ['Buy', 'Strong Buy']:
-                    daily['VERDICT'] = 'Sell'
+                    daily['VERDICT'] = 'Sell'  # Override daily with higher timeframe
                     daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bearish Override'
             
+            # Update daily confidence with hierarchical weighting
             daily['CONFIDENCE_SCORE'] = round(monthly_conf + weekly_conf + daily_conf + four_hour_conf, 2)
             daily['ACCURACY'] = min(95, max(60, abs(daily['CONFIDENCE_SCORE']) * 15 + 70))
         
@@ -2953,6 +2717,7 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
         
         current_price = round(ha_data['HA_Close'].iloc[-1], 2)
         
+        # Calculate targets and stops
         if 'Buy' in signal:
             entry = round(current_price * 0.99, 2)
             targets = [round(current_price * 1.05, 2), round(current_price * 1.10, 2)]
@@ -2962,6 +2727,7 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
             targets = [round(current_price * 0.95, 2), round(current_price * 0.90, 2)]
             stop_loss = round(current_price * 1.05, 2)
         
+        # Calculate price changes
         change_1d = 0.0
         change_1w = 0.0
         
@@ -2971,15 +2737,18 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
         if len(ha_data) >= 5:
             change_1w = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-5] - 1) * 100, 2)
         
+        # Generate verdicts
         rsi_verdict = "Overbought" if last_indicators.get('RSI', 50) > 70 else "Oversold" if last_indicators.get('RSI', 50) < 30 else "Neutral"
         adx_verdict = "Strong Trend" if last_indicators.get('ADX', 25) > 25 else "Weak Trend"
         momentum_verdict = "Bullish" if last_indicators.get('Cycle_Momentum', 0) > 0.02 else "Bearish" if last_indicators.get('Cycle_Momentum', 0) < -0.02 else "Neutral"
         pattern_verdict = "Bullish Patterns" if any(patterns.values()) and signal in ['Buy', 'Strong Buy'] else "Bearish Patterns" if any(patterns.values()) and signal in ['Sell', 'Strong Sell'] else "No Clear Patterns"
         
+        # Handle different asset types for fundamental verdict
         if 'PE_Ratio' in fundamentals and fundamentals['PE_Ratio'] > 0:
             pe_ratio = fundamentals['PE_Ratio']
             fundamental_verdict = "Undervalued" if pe_ratio < 15 else "Overvalued" if pe_ratio > 25 else "Fair Value"
         else:
+            # Crypto fundamentals
             fundamental_verdict = "Strong Fundamentals" if fundamentals.get('Adoption_Score', 0.5) > 0.8 else "Weak Fundamentals"
         
         sentiment_verdict = "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral"
@@ -3050,6 +2819,7 @@ def generate_ai_analysis(symbol, stock_data):
         }
     
     try:
+        # Prepare context from stock data
         context = f"""
         Stock Symbol: {symbol}
         Current Analysis Data:
@@ -3117,61 +2887,23 @@ def generate_ai_analysis(symbol, stock_data):
             'message': str(e)
         }
 
-# ================= BACKGROUND PROCESSING =================
-def analyze_all_stocks_background():
-    """Background analysis function that runs at 5pm daily"""
-    global analysis_in_progress
-    
-    with analysis_lock:
-        if analysis_in_progress:
-            logger.info("Analysis already in progress, skipping background run")
-            return
-        
-        analysis_in_progress = True
-    
-    try:
-        logger.info("Starting scheduled background analysis at 5pm")
-        start_time = time.time()
-        
-        result = analyze_all_stocks_optimized()
-        
-        if result and result.get('status') == 'success':
-            # Save to database
-            save_analysis_to_db(result)
-            
-            # Calculate processing time
-            processing_time = (time.time() - start_time) / 60
-            result['processing_time_minutes'] = round(processing_time, 2)
-            
-            logger.info(f"Background analysis completed successfully in {processing_time:.2f} minutes")
-            logger.info(f"Analyzed {result.get('stocks_analyzed', 0)} assets")
-        else:
-            logger.error("Background analysis failed")
-            
-    except Exception as e:
-        logger.error(f"Error in background analysis: {str(e)}")
-    finally:
-        with analysis_lock:
-            analysis_in_progress = False
-
+# ================= OPTIMIZED BATCH PROCESSING =================
 def analyze_all_stocks_optimized():
-    """Optimized stock analysis with correct data source mapping"""
+    """Optimized stock analysis with faster processing"""
     try:
-        stock_config = get_filtered_stocks(70)
+        stock_config = get_filtered_stocks(85)
         twelve_data_us = stock_config['twelve_data_us']
-        alpha_vantage_nigerian = stock_config['alpha_vantage_nigerian']
+        twelve_data_nigerian = stock_config['twelve_data_nigerian']
         coingecko_cryptos = stock_config['coingecko_cryptos']
         
         results = {}
-        total_stocks = len(twelve_data_us) + len(alpha_vantage_nigerian) + len(coingecko_cryptos)
+        total_stocks = len(twelve_data_us) + len(twelve_data_nigerian) + len(coingecko_cryptos)
         processed_count = 0
         
         logger.info(f"Starting optimized analysis of {total_stocks} assets")
-        logger.info(f"US stocks (Twelve Data): {len(twelve_data_us)}")
-        logger.info(f"Nigerian stocks (Alpha Vantage/Simulated): {len(alpha_vantage_nigerian)}")
-        logger.info(f"Crypto (CoinGecko): {len(coingecko_cryptos)}")
+        logger.info(f"US stocks: {len(twelve_data_us)}, Nigerian: {len(twelve_data_nigerian)}, Crypto: {len(coingecko_cryptos)}")
         
-        # Process US stocks via Twelve Data
+        # Process US stocks
         if twelve_data_us:
             batch_size = TWELVE_DATA_BATCH_SIZE
             num_batches = math.ceil(len(twelve_data_us) / batch_size)
@@ -3189,7 +2921,7 @@ def analyze_all_stocks_optimized():
                         if result:
                             results.update(result)
                             processed_count += 1
-                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - US Stock (Twelve Data)")
+                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - US Stock")
                         else:
                             logger.warning(f"✗ Failed to process {symbol} (US)")
                     except Exception as e:
@@ -3199,35 +2931,35 @@ def analyze_all_stocks_optimized():
                     logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s...")
                     time.sleep(TWELVE_DATA_BATCH_SLEEP)
         
-        # Process Nigerian stocks via Alpha Vantage/Simulated
-        if alpha_vantage_nigerian:
-            batch_size = ALPHA_VANTAGE_BATCH_SIZE
-            num_batches = math.ceil(len(alpha_vantage_nigerian) / batch_size)
+        # Process Nigerian stocks
+        if twelve_data_nigerian:
+            batch_size = TWELVE_DATA_BATCH_SIZE
+            num_batches = math.ceil(len(twelve_data_nigerian) / batch_size)
             
             for batch_idx in range(num_batches):
                 batch_start = batch_idx * batch_size
-                batch_end = min((batch_idx + 1) * batch_size, len(alpha_vantage_nigerian))
-                batch_symbols = alpha_vantage_nigerian[batch_start:batch_end]
+                batch_end = min((batch_idx + 1) * batch_size, len(twelve_data_nigerian))
+                batch_symbols = twelve_data_nigerian[batch_start:batch_end]
                 
                 logger.info(f"Processing Nigerian batch {batch_idx+1}/{num_batches}: {batch_symbols}")
                 
                 for symbol in batch_symbols:
                     try:
-                        result = analyze_stock_hierarchical(symbol, "alpha_vantage")
+                        result = analyze_stock_hierarchical(symbol, "twelve_data")
                         if result:
                             results.update(result)
                             processed_count += 1
-                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - Nigerian Stock (Simulated)")
+                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - Nigerian Stock")
                         else:
                             logger.warning(f"✗ Failed to process {symbol} (Nigerian)")
                     except Exception as e:
                         logger.error(f"✗ Error processing {symbol} (Nigerian): {str(e)}")
                 
                 if batch_idx < num_batches - 1:
-                    logger.info(f"Sleeping {ALPHA_VANTAGE_DELAY}s...")
-                    time.sleep(ALPHA_VANTAGE_DELAY)
+                    logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s...")
+                    time.sleep(TWELVE_DATA_BATCH_SLEEP)
         
-        # Process Crypto assets via CoinGecko with enhanced rate limiting
+        # Process Crypto assets
         if coingecko_cryptos:
             batch_size = COINGECKO_BATCH_SIZE
             num_batches = math.ceil(len(coingecko_cryptos) / batch_size)
@@ -3245,14 +2977,14 @@ def analyze_all_stocks_optimized():
                         if result:
                             results.update(result)
                             processed_count += 1
-                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - Crypto (CoinGecko)")
+                            logger.info(f"✓ {symbol} ({processed_count}/{total_stocks}) - Crypto")
                         else:
                             logger.warning(f"✗ Failed to process {symbol} (Crypto)")
                     except Exception as e:
                         logger.error(f"✗ Error processing {symbol} (Crypto): {str(e)}")
                 
                 if batch_idx < num_batches - 1:
-                    logger.info(f"Sleeping {COINGECKO_DELAY * 2}s for CoinGecko rate limits...")
+                    logger.info(f"Sleeping {COINGECKO_DELAY * 2}s...")
                     time.sleep(COINGECKO_DELAY * 2)
         
         # Calculate statistics
@@ -3268,7 +3000,6 @@ def analyze_all_stocks_optimized():
             'status': 'success' if results else 'no_data',
             'data_sources': {
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
-                'alpha_vantage_count': len([k for k, v in results.items() if v.get('data_source') == 'alpha_vantage']),
                 'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko'])
             },
             'markets': {
@@ -3279,14 +3010,7 @@ def analyze_all_stocks_optimized():
             'processing_info': {
                 'hierarchical_analysis': True,
                 'timeframes_analyzed': ['monthly', 'weekly', 'daily', '4hour'],
-                'ai_analysis_available': claude_client is not None,
-                'data_source_mapping': {
-                    'us_stocks': 'twelve_data',
-                    'nigerian_stocks': 'alpha_vantage (simulated)',
-                    'crypto_assets': 'coingecko'
-                },
-                'background_processing': True,
-                'daily_auto_refresh': '5:00 PM'
+                'ai_analysis_available': claude_client is not None
             },
             **results
         }
@@ -3307,20 +3031,14 @@ def analyze_all_stocks_optimized():
 # ================= FLASK ROUTES =================
 @app.route('/', methods=['GET'])
 def home():
-    """Enhanced home endpoint with persistent data info"""
+    """Enhanced home endpoint"""
     try:
         stock_config = get_filtered_stocks()
-        
-        # Check if we have cached data
-        cached_data = load_analysis_from_db()
-        has_cached_data = cached_data is not None
-        
         return jsonify({
-            'message': 'Enhanced Multi-Asset Analysis API v4.0',
-            'version': '4.0 - Persistent Data + Background Processing + Fixed Nigerian Stocks',
+            'message': 'Enhanced Multi-Asset Analysis API v3.0',
+            'version': '3.0 - Hierarchical Analysis + AI Integration',
             'endpoints': {
-                '/analyze': 'GET - Get latest analysis (from cache or trigger new)',
-                '/analyze/fresh': 'GET - Force fresh analysis (manual refresh)',
+                '/analyze': 'GET - Analyze all assets with hierarchical timeframes',
                 '/ai-analysis': 'POST - Get detailed AI analysis for specific symbol',
                 '/health': 'GET - Health check',
                 '/assets': 'GET - List all available assets',
@@ -3336,21 +3054,8 @@ def home():
                 'hierarchical_analysis': True,
                 'timeframes': ['monthly', 'weekly', 'daily', '4hour'],
                 'ai_analysis': claude_client is not None,
-                'persistent_storage': True,
-                'background_processing': True,
-                'daily_auto_refresh': '5:00 PM',
-                'data_sources': {
-                    'us_stocks': 'twelve_data',
-                    'nigerian_stocks': 'alpha_vantage (simulated)',
-                    'crypto_assets': 'coingecko'
-                },
+                'data_sources': ['twelve_data', 'coingecko'],
                 'optimized_processing': True
-            },
-            'data_status': {
-                'has_cached_data': has_cached_data,
-                'last_update': cached_data.get('timestamp') if cached_data else None,
-                'cached_assets': cached_data.get('stocks_analyzed') if cached_data else 0,
-                'analysis_in_progress': analysis_in_progress
             },
             'status': 'online',
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -3370,11 +3075,10 @@ def list_assets():
             'crypto_assets': stock_config['crypto_stocks'],
             'data_source_distribution': {
                 'twelve_data_us': stock_config['twelve_data_us'],
-                'alpha_vantage_nigerian': stock_config['alpha_vantage_nigerian'],
+                'twelve_data_nigerian': stock_config['twelve_data_nigerian'],
                 'coingecko_cryptos': stock_config['coingecko_cryptos']
             },
             'total_count': stock_config['total_count'],
-            'note': 'Nigerian stocks use simulated data as reliable APIs are limited for NSE',
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         })
     except Exception as e:
@@ -3385,26 +3089,17 @@ def list_assets():
 def health():
     """Health check endpoint"""
     try:
-        cached_data = load_analysis_from_db()
         return jsonify({
             'status': 'healthy',
-            'version': '4.0',
+            'version': '3.0',
             'markets': ['US', 'Nigerian', 'Crypto'],
             'features': {
                 'hierarchical_analysis': True,
                 'ai_analysis': claude_client is not None,
-                'optimized_processing': True,
-                'nigerian_stock_support': True,
-                'persistent_storage': True,
-                'background_processing': True
-            },
-            'data_status': {
-                'has_cached_data': cached_data is not None,
-                'analysis_in_progress': analysis_in_progress,
-                'last_update': cached_data.get('timestamp') if cached_data else None
+                'optimized_processing': True
             },
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'service': 'Multi-Asset Analysis API with Persistent Data & Background Processing'
+            'service': 'Multi-Asset Analysis API with AI Integration'
         })
     except Exception as e:
         logger.error(f"Error in health endpoint: {str(e)}")
@@ -3412,62 +3107,16 @@ def health():
 
 @app.route('/analyze', methods=['GET'])
 def analyze():
-    """Get latest analysis - from cache if available, otherwise return cached data"""
+    """Optimized analysis endpoint"""
     try:
-        # First, try to load from cache
-        cached_data = load_analysis_from_db()
-        
-        if cached_data:
-            logger.info(f"Returning cached analysis data from {cached_data.get('timestamp')}")
-            cached_data['data_source'] = 'database_cache'
-            cached_data['note'] = 'This is cached data. Use /analyze/fresh for new analysis.'
-            return jsonify(cached_data)
-        else:
-            # No cached data, run fresh analysis
-            logger.info("No cached data found, running fresh analysis...")
-            json_response = analyze_all_stocks_optimized()
-            
-            if json_response and json_response.get('status') == 'success':
-                save_analysis_to_db(json_response)
-            
-            logger.info(f"Fresh analysis completed. Status: {json_response.get('status')}")
-            return jsonify(json_response)
-            
+        logger.info("Starting comprehensive optimized asset analysis...")
+        json_response = analyze_all_stocks_optimized()
+        logger.info(f"Analysis completed. Status: {json_response.get('status')}")
+        return jsonify(json_response)
     except Exception as e:
         logger.error(f"Error in /analyze endpoint: {str(e)}")
         return jsonify({
-            'error': f"Failed to get analysis: {str(e)}",
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stocks_analyzed': 0,
-            'status': 'error'
-        }), 500
-
-@app.route('/analyze/fresh', methods=['GET'])
-def analyze_fresh():
-    """Force fresh analysis (manual refresh)"""
-    try:
-        logger.info("Starting manual fresh analysis...")
-        start_time = time.time()
-        
-        json_response = analyze_all_stocks_optimized()
-        
-        if json_response and json_response.get('status') == 'success':
-            # Calculate processing time
-            processing_time = (time.time() - start_time) / 60
-            json_response['processing_time_minutes'] = round(processing_time, 2)
-            
-            # Save to database
-            save_analysis_to_db(json_response)
-            
-            logger.info(f"Fresh analysis completed in {processing_time:.2f} minutes")
-        
-        logger.info(f"Fresh analysis completed. Status: {json_response.get('status')}")
-        return jsonify(json_response)
-        
-    except Exception as e:
-        logger.error(f"Error in /analyze/fresh endpoint: {str(e)}")
-        return jsonify({
-            'error': f"Failed to run fresh analysis: {str(e)}",
+            'error': f"Failed to analyze assets: {str(e)}",
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': 0,
             'status': 'error'
@@ -3486,27 +3135,18 @@ def ai_analysis():
         
         symbol = data['symbol'].upper()
         
+        # First, get the current analysis for the symbol
         logger.info(f"Generating AI analysis for {symbol}")
         
         # Determine data source based on symbol
         stock_config = get_filtered_stocks()
         if symbol in stock_config['crypto_stocks']:
             data_source = "coingecko"
-        elif symbol in stock_config['nigerian_stocks']:
-            data_source = "alpha_vantage"
         else:
             data_source = "twelve_data"
         
-        # Try to get from cache first
-        cached_data = load_analysis_from_db()
-        stock_analysis = None
-        
-        if cached_data and symbol in cached_data:
-            stock_analysis = {symbol: cached_data[symbol]}
-            logger.info(f"Using cached data for AI analysis of {symbol}")
-        else:
-            # Get fresh analysis for this symbol
-            stock_analysis = analyze_stock_hierarchical(symbol, data_source)
+        # Get current analysis
+        stock_analysis = analyze_stock_hierarchical(symbol, data_source)
         
         if not stock_analysis or symbol not in stock_analysis:
             return jsonify({
@@ -3536,7 +3176,7 @@ def not_found(error):
     return jsonify({
         'error': 'Endpoint not found',
         'message': 'The requested URL was not found on the server',
-        'available_endpoints': ['/analyze', '/analyze/fresh', '/ai-analysis', '/health', '/assets', '/'],
+        'available_endpoints': ['/analyze', '/ai-analysis', '/health', '/assets', '/'],
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }), 404
 
@@ -3548,45 +3188,13 @@ def internal_error(error):
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }), 500
 
-# ================= STARTUP AND SCHEDULER =================
-def start_scheduler():
-    """Start the background scheduler for daily 5pm analysis"""
-    try:
-        # Schedule daily analysis at 5:00 PM
-        scheduler.add_job(
-            func=analyze_all_stocks_background,
-            trigger=CronTrigger(hour=17, minute=0),  # 5:00 PM
-            id='daily_analysis',
-            name='Daily Stock Analysis at 5PM',
-            replace_existing=True
-        )
-        
-        scheduler.start()
-        logger.info("Background scheduler started - Daily analysis at 5:00 PM")
-        
-    except Exception as e:
-        logger.error(f"Error starting scheduler: {str(e)}")
-
 if __name__ == "__main__":
-    # Initialize database
-    init_database()
-    
-    # Start background scheduler
-    start_scheduler()
-    
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_ENV") == "development"
     
-    logger.info(f"Starting Enhanced Multi-Asset Analysis API v4.0 on port {port}")
+    logger.info(f"Starting Enhanced Multi-Asset Analysis API v3.0 on port {port}")
     logger.info(f"Debug mode: {debug_mode}")
     logger.info(f"Total assets configured: {get_filtered_stocks()['total_count']}")
     logger.info(f"AI Analysis available: {claude_client is not None}")
-    logger.info("Data source mapping: US (Twelve Data), Nigerian (Simulated), Crypto (CoinGecko)")
-    logger.info("Features: Persistent Storage + Background Processing + Daily 5PM Auto-Refresh")
     
-    try:
-        app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
-    finally:
-        # Cleanup scheduler on shutdown
-        if scheduler.running:
-            scheduler.shutdown()
+    app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
