@@ -1892,7 +1892,7 @@ warnings.filterwarnings('ignore')
 # ================= ENHANCED GLOBAL CONFIGURATION =================
 TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY")
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
-CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
+# CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 COINGECKO_BASE_URL = os.environ.get("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
 
 # Database configuration
