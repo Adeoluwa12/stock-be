@@ -1,18 +1,23 @@
-fastapi
-uvicorn
-yfinance
-pandas
-numpy
-pandas_ta
+# Web frameworks
 Flask==2.3.3
 Flask-CORS==4.0.0
+fastapi
+uvicorn
+gunicorn
+Werkzeug==2.3.7
+
+# Data handling & analysis
 pandas==2.1.1
 numpy==1.24.3
+pandas_ta
+scipy
+scikit-learn
+
+# HTTP & APIs
 requests==2.31.0
 python-dotenv==1.0.0
 yfinance==0.2.18
-scipy
-scikit-learn
-gunicorn
-requests==2.31.0
-Werkzeug==2.3.7
+anthropic
+
+# Scheduling
+apscheduler
