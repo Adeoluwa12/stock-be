@@ -1890,10 +1890,10 @@ import threading
 warnings.filterwarnings('ignore')
 
 # ================= ENHANCED GLOBAL CONFIGURATION =================
-TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
-ALPHA_VANTAGE_API_KEY = "AK656KG03APJM5ZC"  # Add your Alpha Vantage key
-CLAUDE_API_KEY = "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"  # Add your Claude API key
-COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY")
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
+CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
+COINGECKO_BASE_URL = os.environ.get("COINGECKO_BASE_URL", "https://api.coingecko.com/api/v3")
 
 # Database configuration
 DATABASE_PATH = "stock_analysis.db"
