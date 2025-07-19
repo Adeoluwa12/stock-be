@@ -1859,8 +1859,6 @@
     
 #     app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
 
-
-
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
@@ -1878,17 +1876,26 @@ import time
 import requests
 import math
 import os
-from threading import Lock
+from threading import Lock, Thread
 import queue
 import anthropic
+import sqlite3
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pickle
+import threading
 
 warnings.filterwarnings('ignore')
 
 # ================= ENHANCED GLOBAL CONFIGURATION =================
 TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
-ALPHA_VANTAGE_API_KEY = "AK656KG03APJM5ZC"  # Add your Alpha Vantage key
-CLAUDE_API_KEY = "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"  # Add your Claude API key
+ALPHA_VANTAGE_API_KEY = "AK656KG03APJM5ZC"
+CLAUDE_API_KEY = "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"
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+
+# Database configuration
+DATABASE_PATH = "stock_analysis.db"
+ANALYSIS_CACHE_FILE = "latest_analysis.json"
 
 RISK_FREE_RATE = 0.02
 MAX_WORKERS = 2
@@ -1917,14 +1924,14 @@ FUNDAMENTAL_WEIGHT = 0.3
 SENTIMENT_WEIGHT = 0.2
 TECHNICAL_WEIGHT = 0.5
 
-# Enhanced Rate limiting configuration - Optimized for speed
+# Enhanced Rate limiting configuration
 TWELVE_DATA_RATE_LIMIT_PER_MIN = 8
 TWELVE_DATA_BATCH_SIZE = 4
-TWELVE_DATA_BATCH_SLEEP = 45  # Reduced sleep time
-TWELVE_DATA_RETRY_ATTEMPTS = 2  # Reduced retries
-TWELVE_DATA_RETRY_DELAY = 15  # Reduced delay
+TWELVE_DATA_BATCH_SLEEP = 45
+TWELVE_DATA_RETRY_ATTEMPTS = 2
+TWELVE_DATA_RETRY_DELAY = 15
 ALPHA_VANTAGE_BATCH_SIZE = 3
-ALPHA_VANTAGE_DELAY = 12  # Alpha Vantage has 5 calls per minute limit
+ALPHA_VANTAGE_DELAY = 12
 COINGECKO_BATCH_SIZE = 10
 COINGECKO_DELAY = 1.0
 
@@ -1936,6 +1943,10 @@ last_coingecko_request = 0
 request_count_twelve_data = 0
 request_count_alpha_vantage = 0
 
+# Background processing
+analysis_in_progress = False
+analysis_lock = threading.Lock()
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1946,16 +1957,173 @@ logger = logging.getLogger(__name__)
 
 # ================= FLASK APP SETUP =================
 app = Flask(__name__)
+
+# Enhanced CORS configuration - Allow all origins
 CORS(app, resources={
     r"/*": {
-        "origins": ["*", "http://localhost:5177", "https://my-stocks-s2at.onrender.com"],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
+        "origins": "*",  # Allow all origins
+        "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+        "supports_credentials": True
     }
 })
 
+# Add explicit CORS headers for all responses
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
+
 # Initialize Claude client
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY != "YOUR_CLAUDE_API_KEY" else None
+
+# Initialize scheduler
+scheduler = BackgroundScheduler()
+
+# ================= DATABASE SETUP =================
+def init_database():
+    """Initialize SQLite database for persistent storage"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analysis_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            market TEXT NOT NULL,
+            data_source TEXT NOT NULL,
+            analysis_data TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol) ON CONFLICT REPLACE
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analysis_metadata (
+            id INTEGER PRIMARY KEY,
+            total_analyzed INTEGER,
+            success_rate REAL,
+            last_update DATETIME,
+            status TEXT,
+            processing_time_minutes REAL
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully")
+
+def save_analysis_to_db(results):
+    """Save analysis results to database"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Save individual stock results
+        for symbol, data in results.items():
+            if symbol not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO analysis_results 
+                    (symbol, market, data_source, analysis_data) 
+                    VALUES (?, ?, ?, ?)
+                ''', (
+                    symbol,
+                    data.get('market', 'Unknown'),
+                    data.get('data_source', 'Unknown'),
+                    json.dumps(data)
+                ))
+        
+        # Save metadata
+        cursor.execute('''
+            INSERT OR REPLACE INTO analysis_metadata 
+            (id, total_analyzed, success_rate, last_update, status, processing_time_minutes) 
+            VALUES (1, ?, ?, ?, ?, ?)
+        ''', (
+            results.get('stocks_analyzed', 0),
+            results.get('success_rate', 0),
+            datetime.now().isoformat(),
+            results.get('status', 'unknown'),
+            results.get('processing_time_minutes', 0)
+        ))
+        
+        conn.commit()
+        logger.info(f"Saved {len([k for k in results.keys() if k not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']])} analysis results to database")
+        
+    except Exception as e:
+        logger.error(f"Error saving to database: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+def load_analysis_from_db():
+    """Load latest analysis results from database"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Get metadata
+        cursor.execute('SELECT * FROM analysis_metadata WHERE id = 1')
+        metadata = cursor.fetchone()
+        
+        if not metadata:
+            return None
+        
+        # Get all stock results
+        cursor.execute('SELECT symbol, analysis_data FROM analysis_results ORDER BY timestamp DESC')
+        stock_results = cursor.fetchall()
+        
+        if not stock_results:
+            return None
+        
+        # Reconstruct response format
+        response = {
+            'timestamp': metadata[3],  # last_update
+            'stocks_analyzed': metadata[1],  # total_analyzed
+            'success_rate': metadata[2],  # success_rate
+            'status': metadata[4],  # status
+            'processing_time_minutes': metadata[5],  # processing_time_minutes
+            'data_source': 'database_cache',
+            'markets': {'us_stocks': 0, 'nigerian_stocks': 0, 'crypto_assets': 0},
+            'data_sources': {'twelve_data_count': 0, 'coingecko_count': 0}
+        }
+        
+        # Add stock data
+        for symbol, analysis_json in stock_results:
+            try:
+                analysis_data = json.loads(analysis_json)
+                response[symbol] = analysis_data
+                
+                # Count by market
+                market = analysis_data.get('market', 'Unknown')
+                if market == 'US':
+                    response['markets']['us_stocks'] += 1
+                elif market == 'Nigerian':
+                    response['markets']['nigerian_stocks'] += 1
+                elif market == 'Crypto':
+                    response['markets']['crypto_assets'] += 1
+                
+                # Count by data source
+                data_source = analysis_data.get('data_source', 'Unknown')
+                if data_source == 'twelve_data':
+                    response['data_sources']['twelve_data_count'] += 1
+                elif data_source == 'coingecko':
+                    response['data_sources']['coingecko_count'] += 1
+                    
+            except json.JSONDecodeError:
+                logger.error(f"Error parsing analysis data for {symbol}")
+                continue
+        
+        logger.info(f"Loaded {len(stock_results)} analysis results from database")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error loading from database: {str(e)}")
+        return None
+    finally:
+        conn.close()
 
 # ================= ENHANCED STOCK CONFIGURATION =================
 def get_filtered_stocks(num_stocks=85):
@@ -2210,7 +2378,7 @@ def fetch_stock_data(symbol, interval="1day", outputsize=100, source="twelve_dat
         logger.error(f"Unknown data source: {source}")
         return pd.DataFrame()
 
-# ================= EXISTING ANALYSIS FUNCTIONS (ENHANCED) =================
+# ================= EXISTING ANALYSIS FUNCTIONS =================
 def heikin_ashi(df):
     """Convert dataframe to Heikin-Ashi candles with proper error handling"""
     if df.empty:
@@ -2241,10 +2409,6 @@ def heikin_ashi(df):
     except Exception as e:
         logger.error(f"Error in heikin_ashi calculation: {str(e)}")
         return pd.DataFrame()
-
-# [Keep all existing analysis functions: detect_zigzag_pivots, calculate_ha_indicators, 
-# detect_geometric_patterns, detect_elliott_waves, detect_confluence, generate_cycle_analysis,
-# get_fundamental_data, get_market_sentiment, generate_smc_signals - they remain the same]
 
 def detect_zigzag_pivots(data):
     """Detect significant pivot points using zigzag algorithm"""
@@ -2456,7 +2620,6 @@ def generate_cycle_analysis(df, symbol):
 
 def get_fundamental_data(symbol):
     """Get fundamental data with crypto support"""
-    # Enhanced with crypto data
     pe_ratios = {
         # US Stocks
         'AAPL': 28.5, 'MSFT': 32.1, 'TSLA': 45.2, 'GOOGL': 24.8, 'AMZN': 38.9,
@@ -2474,17 +2637,16 @@ def get_fundamental_data(symbol):
         # Nigerian Industrial
         'DANGCEM.NG': 19.2, 'BUACEMENT.NG': 16.8, 'WAPCO.NG': 15.5,
         
-        # Cryptos (using market cap rank as proxy)
+        # Cryptos
         'bitcoin': 0, 'ethereum': 0, 'binancecoin': 0, 'solana': 0, 'cardano': 0
     }
     
-    # Determine asset type
     is_nigerian = symbol.endswith('.NG')
     is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar', 'vechain', 'filecoin', 'tron', 'monero', 'ethereum-classic']
     
     if is_crypto:
         return {
-            'PE_Ratio': 0,  # N/A for crypto
+            'PE_Ratio': 0,
             'Market_Cap_Rank': random.randint(1, 100),
             'Adoption_Score': random.uniform(0.6, 0.95),
             'Technology_Score': random.uniform(0.7, 0.98)
@@ -2513,12 +2675,11 @@ def get_market_sentiment(symbol):
         'bitcoin': 0.78, 'ethereum': 0.82, 'binancecoin': 0.65, 'solana': 0.75, 'cardano': 0.58
     }
     
-    # Default sentiment based on asset type
     is_nigerian = symbol.endswith('.NG')
     is_crypto = symbol in ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cardano', 'avalanche-2', 'polkadot', 'chainlink', 'polygon', 'litecoin', 'near', 'uniswap', 'cosmos', 'algorand', 'stellar', 'vechain', 'filecoin', 'tron', 'monero', 'ethereum-classic']
     
     if is_crypto:
-        default_sentiment = 0.6  # Generally positive for major cryptos
+        default_sentiment = 0.6
     elif is_nigerian:
         default_sentiment = 0.45
     else:
@@ -2549,15 +2710,14 @@ def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamen
         elif 'RSI' in indicators and indicators['RSI'] > 70:
             signal_score -= 0.5
         
-        # Handle both traditional stocks and crypto
         if 'PE_Ratio' in fundamentals:
             pe_ratio = fundamentals['PE_Ratio']
-            if pe_ratio > 0:  # Traditional stocks
+            if pe_ratio > 0:
                 if pe_ratio < 15:
                     signal_score += 0.5
                 elif pe_ratio > 30:
                     signal_score -= 0.5
-        elif 'Market_Cap_Rank' in fundamentals:  # Crypto
+        elif 'Market_Cap_Rank' in fundamentals:
             if fundamentals['Market_Cap_Rank'] <= 10:
                 signal_score += 0.3
             if fundamentals['Adoption_Score'] > 0.8:
@@ -2586,7 +2746,6 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
     try:
         logger.info(f"Starting hierarchical analysis for {symbol} using {data_source}")
         
-        # Fetch data for all timeframes
         timeframes = {
             'monthly': ('1month', 24),
             'weekly': ('1week', 52),
@@ -2597,7 +2756,6 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
         timeframe_data = {}
         for tf_name, (interval, size) in timeframes.items():
             if data_source == "coingecko":
-                # CoinGecko doesn't support different intervals, use daily and resample
                 data = fetch_stock_data(symbol, "1day", size * 7, data_source)
                 if not data.empty and tf_name != 'daily':
                     if tf_name == 'monthly':
@@ -2609,7 +2767,6 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
                             'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
                         }).dropna()
                     elif tf_name == '4hour':
-                        # For crypto, use daily as 4-hour proxy
                         pass
             else:
                 data = fetch_stock_data(symbol, interval, size, data_source)
@@ -2621,14 +2778,12 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
             logger.error(f"No data available for {symbol}")
             return None
         
-        # Analyze each timeframe
         analyses = {}
         for tf_name, data in timeframe_data.items():
             analysis = analyze_timeframe_enhanced(data, symbol, tf_name.upper())
             if analysis:
                 analyses[f"{tf_name.upper()}_TIMEFRAME"] = analysis
         
-        # Apply hierarchical logic
         final_analysis = apply_hierarchical_logic(analyses, symbol)
         
         result = {
@@ -2649,37 +2804,31 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
 def apply_hierarchical_logic(analyses, symbol):
     """Apply hierarchical logic where daily depends on weekly/monthly"""
     try:
-        # Get timeframe analyses
         monthly = analyses.get('MONTHLY_TIMEFRAME')
         weekly = analyses.get('WEEKLY_TIMEFRAME')
         daily = analyses.get('DAILY_TIMEFRAME')
         four_hour = analyses.get('4HOUR_TIMEFRAME')
         
-        # Apply hierarchical weighting
         if daily and weekly and monthly:
-            # Monthly trend has highest weight
             monthly_weight = 0.4
             weekly_weight = 0.3
             daily_weight = 0.2
             four_hour_weight = 0.1
             
-            # Calculate weighted confidence
             monthly_conf = monthly['CONFIDENCE_SCORE'] * monthly_weight
             weekly_conf = weekly['CONFIDENCE_SCORE'] * weekly_weight
             daily_conf = daily['CONFIDENCE_SCORE'] * daily_weight
             four_hour_conf = four_hour['CONFIDENCE_SCORE'] * four_hour_weight if four_hour else 0
             
-            # Determine overall verdict based on hierarchy
             if monthly['VERDICT'] in ['Strong Buy', 'Buy'] and weekly['VERDICT'] in ['Strong Buy', 'Buy']:
                 if daily['VERDICT'] in ['Sell', 'Strong Sell']:
-                    daily['VERDICT'] = 'Buy'  # Override daily with higher timeframe
+                    daily['VERDICT'] = 'Buy'
                     daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bullish Override'
             elif monthly['VERDICT'] in ['Strong Sell', 'Sell'] and weekly['VERDICT'] in ['Strong Sell', 'Sell']:
                 if daily['VERDICT'] in ['Buy', 'Strong Buy']:
-                    daily['VERDICT'] = 'Sell'  # Override daily with higher timeframe
+                    daily['VERDICT'] = 'Sell'
                     daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bearish Override'
             
-            # Update daily confidence with hierarchical weighting
             daily['CONFIDENCE_SCORE'] = round(monthly_conf + weekly_conf + daily_conf + four_hour_conf, 2)
             daily['ACCURACY'] = min(95, max(60, abs(daily['CONFIDENCE_SCORE']) * 15 + 70))
         
@@ -2717,7 +2866,6 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
         
         current_price = round(ha_data['HA_Close'].iloc[-1], 2)
         
-        # Calculate targets and stops
         if 'Buy' in signal:
             entry = round(current_price * 0.99, 2)
             targets = [round(current_price * 1.05, 2), round(current_price * 1.10, 2)]
@@ -2727,7 +2875,6 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
             targets = [round(current_price * 0.95, 2), round(current_price * 0.90, 2)]
             stop_loss = round(current_price * 1.05, 2)
         
-        # Calculate price changes
         change_1d = 0.0
         change_1w = 0.0
         
@@ -2737,18 +2884,15 @@ def analyze_timeframe_enhanced(data, symbol, timeframe):
         if len(ha_data) >= 5:
             change_1w = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-5] - 1) * 100, 2)
         
-        # Generate verdicts
         rsi_verdict = "Overbought" if last_indicators.get('RSI', 50) > 70 else "Oversold" if last_indicators.get('RSI', 50) < 30 else "Neutral"
         adx_verdict = "Strong Trend" if last_indicators.get('ADX', 25) > 25 else "Weak Trend"
         momentum_verdict = "Bullish" if last_indicators.get('Cycle_Momentum', 0) > 0.02 else "Bearish" if last_indicators.get('Cycle_Momentum', 0) < -0.02 else "Neutral"
         pattern_verdict = "Bullish Patterns" if any(patterns.values()) and signal in ['Buy', 'Strong Buy'] else "Bearish Patterns" if any(patterns.values()) and signal in ['Sell', 'Strong Sell'] else "No Clear Patterns"
         
-        # Handle different asset types for fundamental verdict
         if 'PE_Ratio' in fundamentals and fundamentals['PE_Ratio'] > 0:
             pe_ratio = fundamentals['PE_Ratio']
             fundamental_verdict = "Undervalued" if pe_ratio < 15 else "Overvalued" if pe_ratio > 25 else "Fair Value"
         else:
-            # Crypto fundamentals
             fundamental_verdict = "Strong Fundamentals" if fundamentals.get('Adoption_Score', 0.5) > 0.8 else "Weak Fundamentals"
         
         sentiment_verdict = "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral"
@@ -2819,7 +2963,6 @@ def generate_ai_analysis(symbol, stock_data):
         }
     
     try:
-        # Prepare context from stock data
         context = f"""
         Stock Symbol: {symbol}
         Current Analysis Data:
@@ -2887,9 +3030,45 @@ def generate_ai_analysis(symbol, stock_data):
             'message': str(e)
         }
 
-# ================= OPTIMIZED BATCH PROCESSING =================
+# ================= BACKGROUND PROCESSING =================
+def analyze_all_stocks_background():
+    """Background analysis function that runs at 5pm daily"""
+    global analysis_in_progress
+    
+    with analysis_lock:
+        if analysis_in_progress:
+            logger.info("Analysis already in progress, skipping background run")
+            return
+        
+        analysis_in_progress = True
+    
+    try:
+        logger.info("Starting scheduled background analysis at 5pm")
+        start_time = time.time()
+        
+        result = analyze_all_stocks_optimized()
+        
+        if result and result.get('status') == 'success':
+            # Save to database
+            save_analysis_to_db(result)
+            
+            # Calculate processing time
+            processing_time = (time.time() - start_time) / 60
+            result['processing_time_minutes'] = round(processing_time, 2)
+            
+            logger.info(f"Background analysis completed successfully in {processing_time:.2f} minutes")
+            logger.info(f"Analyzed {result.get('stocks_analyzed', 0)} assets")
+        else:
+            logger.error("Background analysis failed")
+            
+    except Exception as e:
+        logger.error(f"Error in background analysis: {str(e)}")
+    finally:
+        with analysis_lock:
+            analysis_in_progress = False
+
 def analyze_all_stocks_optimized():
-    """Optimized stock analysis with faster processing"""
+    """Optimized stock analysis with database persistence"""
     try:
         stock_config = get_filtered_stocks(85)
         twelve_data_us = stock_config['twelve_data_us']
@@ -2999,6 +3178,7 @@ def analyze_all_stocks_optimized():
             'success_rate': round((len(results) / total_stocks) * 100, 1) if total_stocks > 0 else 0,
             'status': 'success' if results else 'no_data',
             'data_sources': {
+                'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
                 'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko'])
             },
@@ -3010,7 +3190,9 @@ def analyze_all_stocks_optimized():
             'processing_info': {
                 'hierarchical_analysis': True,
                 'timeframes_analyzed': ['monthly', 'weekly', 'daily', '4hour'],
-                'ai_analysis_available': claude_client is not None
+                'ai_analysis_available': claude_client is not None,
+                'background_processing': True,
+                'daily_auto_refresh': '5:00 PM'
             },
             **results
         }
@@ -3031,14 +3213,20 @@ def analyze_all_stocks_optimized():
 # ================= FLASK ROUTES =================
 @app.route('/', methods=['GET'])
 def home():
-    """Enhanced home endpoint"""
+    """Enhanced home endpoint with persistent data info"""
     try:
         stock_config = get_filtered_stocks()
+        
+        # Check if we have cached data
+        cached_data = load_analysis_from_db()
+        has_cached_data = cached_data is not None
+        
         return jsonify({
-            'message': 'Enhanced Multi-Asset Analysis API v3.0',
-            'version': '3.0 - Hierarchical Analysis + AI Integration',
+            'message': 'Enhanced Multi-Asset Analysis API v4.0',
+            'version': '4.0 - Persistent Data + Background Processing + CORS Fixed',
             'endpoints': {
-                '/analyze': 'GET - Analyze all assets with hierarchical timeframes',
+                '/analyze': 'GET - Get latest analysis (from cache or trigger new)',
+                '/analyze/fresh': 'GET - Force fresh analysis (manual refresh)',
                 '/ai-analysis': 'POST - Get detailed AI analysis for specific symbol',
                 '/health': 'GET - Health check',
                 '/assets': 'GET - List all available assets',
@@ -3054,8 +3242,17 @@ def home():
                 'hierarchical_analysis': True,
                 'timeframes': ['monthly', 'weekly', 'daily', '4hour'],
                 'ai_analysis': claude_client is not None,
+                'persistent_storage': True,
+                'background_processing': True,
+                'daily_auto_refresh': '5:00 PM',
                 'data_sources': ['twelve_data', 'coingecko'],
                 'optimized_processing': True
+            },
+            'data_status': {
+                'has_cached_data': has_cached_data,
+                'last_update': cached_data.get('timestamp') if cached_data else None,
+                'cached_assets': cached_data.get('stocks_analyzed') if cached_data else 0,
+                'analysis_in_progress': analysis_in_progress
             },
             'status': 'online',
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -3089,17 +3286,25 @@ def list_assets():
 def health():
     """Health check endpoint"""
     try:
+        cached_data = load_analysis_from_db()
         return jsonify({
             'status': 'healthy',
-            'version': '3.0',
+            'version': '4.0',
             'markets': ['US', 'Nigerian', 'Crypto'],
             'features': {
                 'hierarchical_analysis': True,
                 'ai_analysis': claude_client is not None,
-                'optimized_processing': True
+                'optimized_processing': True,
+                'persistent_storage': True,
+                'background_processing': True
+            },
+            'data_status': {
+                'has_cached_data': cached_data is not None,
+                'analysis_in_progress': analysis_in_progress,
+                'last_update': cached_data.get('timestamp') if cached_data else None
             },
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'service': 'Multi-Asset Analysis API with AI Integration'
+            'service': 'Multi-Asset Analysis API with Persistent Data & Background Processing'
         })
     except Exception as e:
         logger.error(f"Error in health endpoint: {str(e)}")
@@ -3107,16 +3312,62 @@ def health():
 
 @app.route('/analyze', methods=['GET'])
 def analyze():
-    """Optimized analysis endpoint"""
+    """Get latest analysis - from cache if available, otherwise return cached data"""
     try:
-        logger.info("Starting comprehensive optimized asset analysis...")
-        json_response = analyze_all_stocks_optimized()
-        logger.info(f"Analysis completed. Status: {json_response.get('status')}")
-        return jsonify(json_response)
+        # First, try to load from cache
+        cached_data = load_analysis_from_db()
+        
+        if cached_data:
+            logger.info(f"Returning cached analysis data from {cached_data.get('timestamp')}")
+            cached_data['data_source'] = 'database_cache'
+            cached_data['note'] = 'This is cached data. Use /analyze/fresh for new analysis.'
+            return jsonify(cached_data)
+        else:
+            # No cached data, run fresh analysis
+            logger.info("No cached data found, running fresh analysis...")
+            json_response = analyze_all_stocks_optimized()
+            
+            if json_response and json_response.get('status') == 'success':
+                save_analysis_to_db(json_response)
+            
+            logger.info(f"Fresh analysis completed. Status: {json_response.get('status')}")
+            return jsonify(json_response)
+            
     except Exception as e:
         logger.error(f"Error in /analyze endpoint: {str(e)}")
         return jsonify({
-            'error': f"Failed to analyze assets: {str(e)}",
+            'error': f"Failed to get analysis: {str(e)}",
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'stocks_analyzed': 0,
+            'status': 'error'
+        }), 500
+
+@app.route('/analyze/fresh', methods=['GET'])
+def analyze_fresh():
+    """Force fresh analysis (manual refresh)"""
+    try:
+        logger.info("Starting manual fresh analysis...")
+        start_time = time.time()
+        
+        json_response = analyze_all_stocks_optimized()
+        
+        if json_response and json_response.get('status') == 'success':
+            # Calculate processing time
+            processing_time = (time.time() - start_time) / 60
+            json_response['processing_time_minutes'] = round(processing_time, 2)
+            
+            # Save to database
+            save_analysis_to_db(json_response)
+            
+            logger.info(f"Fresh analysis completed in {processing_time:.2f} minutes")
+        
+        logger.info(f"Fresh analysis completed. Status: {json_response.get('status')}")
+        return jsonify(json_response)
+        
+    except Exception as e:
+        logger.error(f"Error in /analyze/fresh endpoint: {str(e)}")
+        return jsonify({
+            'error': f"Failed to run fresh analysis: {str(e)}",
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_analyzed': 0,
             'status': 'error'
@@ -3135,7 +3386,6 @@ def ai_analysis():
         
         symbol = data['symbol'].upper()
         
-        # First, get the current analysis for the symbol
         logger.info(f"Generating AI analysis for {symbol}")
         
         # Determine data source based on symbol
@@ -3145,8 +3395,16 @@ def ai_analysis():
         else:
             data_source = "twelve_data"
         
-        # Get current analysis
-        stock_analysis = analyze_stock_hierarchical(symbol, data_source)
+        # Try to get from cache first
+        cached_data = load_analysis_from_db()
+        stock_analysis = None
+        
+        if cached_data and symbol in cached_data:
+            stock_analysis = {symbol: cached_data[symbol]}
+            logger.info(f"Using cached data for AI analysis of {symbol}")
+        else:
+            # Get fresh analysis for this symbol
+            stock_analysis = analyze_stock_hierarchical(symbol, data_source)
         
         if not stock_analysis or symbol not in stock_analysis:
             return jsonify({
@@ -3176,7 +3434,7 @@ def not_found(error):
     return jsonify({
         'error': 'Endpoint not found',
         'message': 'The requested URL was not found on the server',
-        'available_endpoints': ['/analyze', '/ai-analysis', '/health', '/assets', '/'],
+        'available_endpoints': ['/analyze', '/analyze/fresh', '/ai-analysis', '/health', '/assets', '/'],
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }), 404
 
@@ -3188,13 +3446,53 @@ def internal_error(error):
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }), 500
 
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    """Handle preflight OPTIONS requests"""
+    response = jsonify({'status': 'ok'})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+# ================= STARTUP AND SCHEDULER =================
+def start_scheduler():
+    """Start the background scheduler for daily 5pm analysis"""
+    try:
+        # Schedule daily analysis at 5:00 PM
+        scheduler.add_job(
+            func=analyze_all_stocks_background,
+            trigger=CronTrigger(hour=17, minute=0),  # 5:00 PM
+            id='daily_analysis',
+            name='Daily Stock Analysis at 5PM',
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        logger.info("Background scheduler started - Daily analysis at 5:00 PM")
+        
+    except Exception as e:
+        logger.error(f"Error starting scheduler: {str(e)}")
+
 if __name__ == "__main__":
+    # Initialize database
+    init_database()
+    
+    # Start background scheduler
+    start_scheduler()
+    
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_ENV") == "development"
     
-    logger.info(f"Starting Enhanced Multi-Asset Analysis API v3.0 on port {port}")
+    logger.info(f"Starting Enhanced Multi-Asset Analysis API v4.0 on port {port}")
     logger.info(f"Debug mode: {debug_mode}")
     logger.info(f"Total assets configured: {get_filtered_stocks()['total_count']}")
     logger.info(f"AI Analysis available: {claude_client is not None}")
+    logger.info("Features: Persistent Storage + Background Processing + Daily 5PM Auto-Refresh")
     
-    app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
+    try:
+        app.run(host='0.0.0.0', port=port, debug=debug_mode, threaded=True)
+    finally:
+        # Cleanup scheduler on shutdown
+        if scheduler.running:
+            scheduler.shutdown()
