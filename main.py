@@ -3178,7 +3178,7 @@ def analyze_all_stocks_optimized():
             'success_rate': round((len(results) / total_stocks) * 100, 1) if total_stocks > 0 else 0,
             'status': 'success' if results else 'no_data',
             'data_sources': {
-                'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data
+                'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data' ])
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
                 'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko'])
             },
