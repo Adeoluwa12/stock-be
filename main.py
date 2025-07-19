@@ -3016,8 +3016,23 @@ def generate_ai_analysis(symbol, stock_data):
             ]
         )
         
+        # Fix: response.content[0] may not have a .text attribute; use .get("text", "") if it's a dict, or str() fallback
+        analysis_text = ""
+        if hasattr(response, "content") and isinstance(response.content, list) and len(response.content) > 0:
+            block = response.content[0]
+            # Safely extract 'text' from block if possible, else fallback to str(block)
+            analysis_text = ""
+            if isinstance(block, dict) and "text" in block:
+                analysis_text = block["text"]
+            elif hasattr(block, "__dict__") and "text" in block.__dict__:
+                analysis_text = block.__dict__["text"]
+            else:
+                analysis_text = str(block)
+        else:
+            analysis_text = "No analysis returned from Claude API."
+
         return {
-            'analysis': response.content[0].text,
+            'analysis': analysis_text,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'model': 'claude-3-sonnet',
             'symbol': symbol
@@ -3178,7 +3193,6 @@ def analyze_all_stocks_optimized():
             'success_rate': round((len(results) / total_stocks) * 100, 1) if total_stocks > 0 else 0,
             'status': 'success' if results else 'no_data',
             'data_sources': {
-                'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data' ])
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
                 'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko'])
             },
