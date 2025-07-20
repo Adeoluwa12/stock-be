@@ -1725,7 +1725,6 @@
 #         if scheduler.running:
 #             scheduler.shutdown()
 
-
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
@@ -1837,32 +1836,36 @@ logger = logging.getLogger(__name__)
 # ================= FLASK APP SETUP =================
 app = Flask(__name__)
 
-# Enhanced CORS configuration with explicit settings
-CORS(app, 
-     origins=["*"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
-     supports_credentials=False,
-     send_wildcard=True,
-     automatic_options=True)
+# Enhanced CORS configuration
+CORS(app, resources={
+    r"/*": {
+        "origins": ["*"],  # Replace with specific origins in production
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+        "expose_headers": ["Content-Range", "X-Content-Range"],
+        "supports_credentials": False,
+        "max_age": 86400
+    }
+})
 
-# Add explicit CORS headers for all responses
-@app.before_request
-def before_request():
-    if request.method == 'OPTIONS':
-        response = jsonify({'status': 'ok'})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,X-Requested-With')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '86400')
-        return response
+# Handle preflight requests explicitly
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    response = jsonify({'status': 'ok'})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, Origin, X-Requested-With'
+    response.headers['Access-Control-Max-Age'] = '86400'
+    logger.info(f"Handled OPTIONS request for {path}")
+    return response
 
+# Ensure CORS headers are added to all responses
 @app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,X-Requested-With')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'false')
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, Origin, X-Requested-With'
+    logger.debug(f"Added CORS headers to response: {response.headers}")
     return response
 
 # Initialize Claude client
@@ -3085,7 +3088,7 @@ def analyze_all_stocks_optimized():
                     logger.info(f"Sleeping {TWELVE_DATA_BATCH_SLEEP}s...")
                     time.sleep(TWELVE_DATA_BATCH_SLEEP)
         
-        # Process Crypto assets (unchanged)
+        # Process Crypto assets
         if coingecko_cryptos: 
             batch_size = COINGECKO_BATCH_SIZE
             num_batches = math.ceil(len(coingecko_cryptos) / batch_size)
@@ -3453,4 +3456,3 @@ if __name__ == "__main__":
         # Cleanup scheduler on shutdown
         if scheduler.running:
             scheduler.shutdown()
-
