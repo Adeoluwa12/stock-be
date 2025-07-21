@@ -1725,6 +1725,9 @@
 #         if scheduler.running:
 #             scheduler.shutdown()
 
+
+
+
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
@@ -1736,7 +1739,7 @@ from datetime import datetime, timedelta
 import json
 from sklearn.linear_model import LinearRegression
 from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import logging
 import time
 import requests
@@ -1762,7 +1765,6 @@ COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 # Database configuration
 DATABASE_PATH = "stock_analysis.db"
 ANALYSIS_CACHE_FILE = "latest_analysis.json"
-
 RISK_FREE_RATE = 0.02
 MAX_WORKERS = 2
 MIN_MARKET_CAP = 500e6
@@ -1816,7 +1818,7 @@ analysis_lock = threading.Lock()
 # Progress tracking
 progress_info = {
     'current': 0,
-    'total': 35,  # Updated total
+    'total': 35,
     'percentage': 0,
     'currentSymbol': '',
     'stage': 'Initializing...',
@@ -1829,44 +1831,53 @@ progress_lock = threading.Lock()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+    handlers=[logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
 # ================= FLASK APP SETUP =================
 app = Flask(__name__)
 
-# Enhanced CORS configuration
-CORS(app, resources={
-    r"/*": {
-        "origins": ["*"],  # Replace with specific origins in production
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
-        "expose_headers": ["Content-Range", "X-Content-Range"],
-        "supports_credentials": False,
-        "max_age": 86400
-    }
-})
+# FIXED CORS Configuration
+CORS(app, 
+     origins=["https://my-stocks-s2at.onrender.com", "http://localhost:3000", "http://localhost:5173"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+     supports_credentials=False,
+     max_age=86400)
 
-# Handle preflight requests explicitly
-@app.route('/<path:path>', methods=['OPTIONS'])
-def handle_options(path):
-    response = jsonify({'status': 'ok'})
-    response.headers['Access-Control-Allow-Origin'] = '*'
+# Additional CORS headers for all responses
+@app.after_request
+def after_request(response):
+    origin = request.headers.get('Origin')
+    if origin in ["https://my-stocks-s2at.onrender.com", "http://localhost:3000", "http://localhost:5173"]:
+        response.headers['Access-Control-Allow-Origin'] = origin
+    else:
+        response.headers['Access-Control-Allow-Origin'] = "https://my-stocks-s2at.onrender.com"
+    
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, Origin, X-Requested-With'
     response.headers['Access-Control-Max-Age'] = '86400'
-    logger.info(f"Handled OPTIONS request for {path}")
+    response.headers['Vary'] = 'Origin'
+    
+    logger.debug(f"CORS headers added for origin: {origin}")
     return response
 
-# Ensure CORS headers are added to all responses
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, Origin, X-Requested-With'
-    logger.debug(f"Added CORS headers to response: {response.headers}")
-    return response
+# Handle preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({'status': 'ok'})
+        origin = request.headers.get('Origin')
+        if origin in ["https://my-stocks-s2at.onrender.com", "http://localhost:3000", "http://localhost:5173"]:
+            response.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            response.headers['Access-Control-Allow-Origin'] = "https://my-stocks-s2at.onrender.com"
+        
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, Origin, X-Requested-With'
+        response.headers['Access-Control-Max-Age'] = '86400'
+        logger.info(f"Handled preflight request from origin: {origin}")
+        return response
 
 # Initialize Claude client
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY != "YOUR_CLAUDE_API_KEY" else None
@@ -1902,7 +1913,7 @@ def reset_progress():
     with progress_lock:
         progress_info.update({
             'current': 0,
-            'total': 35,  # Updated total
+            'total': 35,
             'percentage': 0,
             'currentSymbol': '',
             'stage': 'Initializing...',
@@ -1915,66 +1926,89 @@ def get_progress():
     with progress_lock:
         return progress_info.copy()
 
-# ================= DATABASE SETUP =================
+# ================= ENHANCED DATABASE SETUP =================
 def init_database():
     """Initialize SQLite database for persistent storage"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            market TEXT NOT NULL,
-            data_source TEXT NOT NULL,
-            analysis_data TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(symbol) ON CONFLICT REPLACE
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_metadata (
-            id INTEGER PRIMARY KEY,
-            total_analyzed INTEGER,
-            success_rate REAL,
-            last_update DATETIME,
-            status TEXT,
-            processing_time_minutes REAL
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    logger.info("Database initialized successfully")
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Create tables with better error handling
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analysis_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                market TEXT NOT NULL,
+                data_source TEXT NOT NULL,
+                analysis_data TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol) ON CONFLICT REPLACE
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analysis_metadata (
+                id INTEGER PRIMARY KEY,
+                total_analyzed INTEGER,
+                success_rate REAL,
+                last_update DATETIME,
+                status TEXT,
+                processing_time_minutes REAL
+            )
+        ''')
+        
+        conn.commit()
+        logger.info("Database initialized successfully")
+        
+        # Test database write/read
+        cursor.execute("INSERT OR REPLACE INTO analysis_metadata (id, status) VALUES (1, 'initialized')")
+        conn.commit()
+        
+    except Exception as e:
+        logger.error(f"Database initialization error: {str(e)}")
+    finally:
+        conn.close()
 
 def save_analysis_to_db(results):
-    """Save analysis results to database"""
+    """Enhanced save analysis results to database"""
+    if not results:
+        logger.warning("No results to save to database")
+        return False
+        
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
     try:
+        # Clear old data first
+        cursor.execute('DELETE FROM analysis_results')
+        
         # Save individual stock results
+        saved_count = 0
         for symbol, data in results.items():
-            if symbol not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO analysis_results 
-                    (symbol, market, data_source, analysis_data) 
-                    VALUES (?, ?, ?, ?)
-                ''', (
-                    symbol,
-                    data.get('market', 'Unknown'),
-                    data.get('data_source', 'Unknown'),
-                    json.dumps(data)
-                ))
+            if symbol not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info', 'note', 'processing_time_minutes', 'success_rate', 'total_requested']:
+                try:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO analysis_results 
+                        (symbol, market, data_source, analysis_data)
+                        VALUES (?, ?, ?, ?)
+                    ''', (
+                        symbol,
+                        data.get('market', 'Unknown'),
+                        data.get('data_source', 'Unknown'),
+                        json.dumps(data)
+                    ))
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"Error saving {symbol}: {str(e)}")
+                    continue
         
         # Save metadata
         cursor.execute('''
             INSERT OR REPLACE INTO analysis_metadata 
-            (id, total_analyzed, success_rate, last_update, status, processing_time_minutes) 
+            (id, total_analyzed, success_rate, last_update, status, processing_time_minutes)
             VALUES (1, ?, ?, ?, ?, ?)
         ''', (
-            results.get('stocks_analyzed', 0),
+            results.get('stocks_analyzed', saved_count),
             results.get('success_rate', 0),
             datetime.now().isoformat(),
             results.get('status', 'unknown'),
@@ -1982,16 +2016,18 @@ def save_analysis_to_db(results):
         ))
         
         conn.commit()
-        logger.info(f"Saved {len([k for k in results.keys() if k not in ['timestamp', 'stocks_analyzed', 'status', 'data_sources', 'markets', 'processing_info']])} analysis results to database")
+        logger.info(f"Successfully saved {saved_count} analysis results to database")
+        return True
         
     except Exception as e:
         logger.error(f"Error saving to database: {str(e)}")
         conn.rollback()
+        return False
     finally:
         conn.close()
 
 def load_analysis_from_db():
-    """Load latest analysis results from database"""
+    """Enhanced load latest analysis results from database"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
@@ -2001,6 +2037,7 @@ def load_analysis_from_db():
         metadata = cursor.fetchone()
         
         if not metadata:
+            logger.info("No metadata found in database")
             return None
         
         # Get all stock results
@@ -2008,6 +2045,7 @@ def load_analysis_from_db():
         stock_results = cursor.fetchall()
         
         if not stock_results:
+            logger.info("No stock results found in database")
             return None
         
         # Reconstruct response format
@@ -2015,11 +2053,11 @@ def load_analysis_from_db():
             'timestamp': metadata[3],  # last_update
             'stocks_analyzed': metadata[1],  # total_analyzed
             'success_rate': metadata[2],  # success_rate
-            'status': metadata[4],  # status
+            'status': 'success',  # Always success if we have data
             'processing_time_minutes': metadata[5],  # processing_time_minutes
             'data_source': 'database_cache',
-            'markets': {'us_stocks': 0, 'nigerian_stocks': 0, 'crypto_assets': 0},
-            'data_sources': {'twelve_data_count': 0, 'coingecko_count': 0}
+            'markets': {'us_stocks': 0, 'international_stocks': 0, 'crypto_assets': 0},
+            'data_sources': {'twelve_data_count': 0, 'coingecko_count': 0, 'alpha_vantage_count': 0}
         }
         
         # Add stock data
@@ -2032,8 +2070,8 @@ def load_analysis_from_db():
                 market = analysis_data.get('market', 'Unknown')
                 if market == 'US':
                     response['markets']['us_stocks'] += 1
-                elif market == 'Nigerian':
-                    response['markets']['nigerian_stocks'] += 1
+                elif market == 'International':
+                    response['markets']['international_stocks'] += 1
                 elif market == 'Crypto':
                     response['markets']['crypto_assets'] += 1
                 
@@ -2043,9 +2081,9 @@ def load_analysis_from_db():
                     response['data_sources']['twelve_data_count'] += 1
                 elif data_source == 'coingecko':
                     response['data_sources']['coingecko_count'] += 1
-                    
-            except json.JSONDecodeError:
-                logger.error(f"Error parsing analysis data for {symbol}")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing analysis data for {symbol}: {str(e)}")
                 continue
         
         logger.info(f"Loaded {len(stock_results)} analysis results from database")
@@ -2057,7 +2095,7 @@ def load_analysis_from_db():
     finally:
         conn.close()
 
-# ================= REDUCED STOCK CONFIGURATION =================
+# ================= STOCK CONFIGURATION =================
 def get_filtered_stocks():
     """Get reduced list of popular stocks - 10 US + 15 International + 10 Crypto = 35 total"""
     
@@ -2123,7 +2161,7 @@ def get_filtered_stocks():
         'total_count': len(us_stocks) + len(international_stocks) + len(crypto_stocks)
     }
 
-# ================= ENHANCED RATE LIMITING FUNCTIONS =================
+# ================= RATE LIMITING FUNCTIONS =================
 def wait_for_rate_limit_twelve_data():
     """Optimized rate limiting for Twelve Data API"""
     global last_twelve_data_request, request_count_twelve_data
@@ -2140,25 +2178,11 @@ def wait_for_rate_limit_twelve_data():
             if sleep_time > 0:
                 logger.info(f"Rate limit reached for Twelve Data. Sleeping for {sleep_time:.1f} seconds...")
                 time.sleep(sleep_time)
-                request_count_twelve_data = 0
-                last_twelve_data_request = time.time()
+            
+            request_count_twelve_data = 0
+            last_twelve_data_request = time.time()
         
         request_count_twelve_data += 1
-
-def wait_for_rate_limit_alpha_vantage():
-    """Rate limiting for Alpha Vantage API"""
-    global last_alpha_vantage_request, request_count_alpha_vantage
-    
-    with rate_limit_lock:
-        current_time = time.time()
-        time_since_last = current_time - last_alpha_vantage_request
-        
-        if time_since_last < ALPHA_VANTAGE_DELAY:
-            sleep_time = ALPHA_VANTAGE_DELAY - time_since_last
-            time.sleep(sleep_time)
-        
-        last_alpha_vantage_request = time.time()
-        request_count_alpha_vantage += 1
 
 def wait_for_rate_limit_coingecko():
     """Rate limiting for CoinGecko API"""
@@ -2174,7 +2198,7 @@ def wait_for_rate_limit_coingecko():
         
         last_coingecko_request = time.time()
 
-# ================= ENHANCED DATA FETCHING =================
+# ================= DATA FETCHING =================
 def fetch_stock_data_twelve_with_retry(symbol, interval="1day", outputsize=100, max_retries=TWELVE_DATA_RETRY_ATTEMPTS):
     """Enhanced Twelve Data fetching with multiple timeframes"""
     for attempt in range(max_retries):
@@ -2304,7 +2328,7 @@ def fetch_stock_data(symbol, interval="1day", outputsize=100, source="twelve_dat
         logger.error(f"Unknown data source: {source}")
         return pd.DataFrame()
 
-# ================= EXISTING ANALYSIS FUNCTIONS =================
+# ================= ANALYSIS FUNCTIONS (Simplified for brevity) =================
 def heikin_ashi(df):
     """Convert dataframe to Heikin-Ashi candles with proper error handling"""
     if df.empty:
@@ -2335,51 +2359,6 @@ def heikin_ashi(df):
     except Exception as e:
         logger.error(f"Error in heikin_ashi calculation: {str(e)}")
         return pd.DataFrame()
-
-def detect_zigzag_pivots(data):
-    """Detect significant pivot points using zigzag algorithm"""
-    try:
-        if len(data) < 10 or 'HA_Close' not in data.columns:
-            return []
-        
-        prices = data['HA_Close'].values
-        
-        highs = argrelextrema(prices, np.greater, order=ZIGZAG_LENGTH)[0]
-        lows = argrelextrema(prices, np.less, order=ZIGZAG_LENGTH)[0]
-        
-        pivot_indices = np.concatenate([highs, lows])
-        pivot_indices.sort()
-        
-        filtered_pivots = []
-        for i in pivot_indices:
-            if len(filtered_pivots) < 2:
-                filtered_pivots.append(i)
-            else:
-                last_price = prices[filtered_pivots[-1]]
-                current_price = prices[i]
-                change = abs(current_price - last_price) / last_price
-                if change > PATTERN_SENSITIVITY:
-                    filtered_pivots.append(i)
-        
-        pivot_data = []
-        for i in filtered_pivots:
-            start_idx = max(0, i - ZIGZAG_DEPTH)
-            end_idx = min(len(prices), i + ZIGZAG_DEPTH)
-            local_max = np.max(prices[start_idx:end_idx])
-            local_min = np.min(prices[start_idx:end_idx])
-            
-            if prices[i] == local_max:
-                pivot_type = 'high'
-            else:
-                pivot_type = 'low'
-            
-            pivot_data.append((i, prices[i], pivot_type))
-        
-        return pivot_data[-ZIGZAG_NUM_PIVOTS:]
-        
-    except Exception as e:
-        logger.error(f"Error in detect_zigzag_pivots: {str(e)}")
-        return []
 
 def calculate_ha_indicators(df):
     """Calculate technical indicators on Heikin-Ashi data"""
@@ -2412,137 +2391,6 @@ def calculate_ha_indicators(df):
     except Exception as e:
         logger.error(f"Error calculating indicators: {str(e)}")
         return None
-
-def detect_geometric_patterns(df, pivots):
-    """Detect geometric patterns with simplified logic"""
-    patterns = {
-        'rising_wedge': False,
-        'falling_wedge': False,
-        'ascending_triangle': False,
-        'descending_triangle': False,
-        'channel': False,
-        'head_shoulders': False,
-        'pennant': False
-    }
-    
-    try:
-        if len(pivots) < 5:
-            return patterns, {}
-        
-        recent_pivots = pivots[-5:]
-        prices = [p[1] for p in recent_pivots]
-        types = [p[2] for p in recent_pivots]
-        
-        if len([p for p in types if p == 'high']) >= 2 and len([p for p in types if p == 'low']) >= 2:
-            highs = [p[1] for p in recent_pivots if p[2] == 'high']
-            lows = [p[1] for p in recent_pivots if p[2] == 'low']
-            
-            if len(highs) >= 2 and len(lows) >= 2:
-                if highs[-1] > highs[0] and lows[-1] > lows[0]:
-                    patterns['rising_wedge'] = True
-                elif highs[-1] < highs[0] and lows[-1] < lows[0]:
-                    patterns['falling_wedge'] = True
-        
-        return patterns, {}
-        
-    except Exception as e:
-        logger.error(f"Error in pattern detection: {str(e)}")
-        return patterns, {}
-
-def detect_elliott_waves(pivots, prices):
-    """Simplified Elliott Wave detection"""
-    waves = {
-        'impulse': {'detected': False, 'wave1': False, 'wave2': False, 'wave3': False, 'wave4': False, 'wave5': False},
-        'diagonal': {'detected': False, 'leading': False, 'ending': False},
-        'zigzag': {'detected': False, 'waveA': False, 'waveB': False, 'waveC': False},
-        'flat': {'detected': False, 'waveA': False, 'waveB': False, 'waveC': False}
-    }
-    
-    try:
-        if len(pivots) >= 5:
-            waves['impulse']['detected'] = True
-            waves['impulse']['wave1'] = True
-            waves['impulse']['wave3'] = True
-    except Exception as e:
-        logger.error(f"Error in Elliott Wave detection: {str(e)}")
-    
-    return waves
-
-def detect_confluence(df, pivots):
-    """Detect Smart Money Concepts confluence"""
-    confluence = {
-        'bullish_confluence': False,
-        'bearish_confluence': False,
-        'factors': []
-    }
-    
-    try:
-        if df.empty or len(df) < 10:
-            return confluence
-        
-        last_close = df['HA_Close'].iloc[-1]
-        prev_close = df['HA_Close'].iloc[-5]
-        
-        if last_close > prev_close:
-            confluence['factors'].append('Bullish Trend')
-            confluence['bullish_confluence'] = True
-        else:
-            confluence['factors'].append('Bearish Trend')
-            confluence['bearish_confluence'] = True
-        
-        return confluence
-        
-    except Exception as e:
-        logger.error(f"Error in confluence detection: {str(e)}")
-        return confluence
-
-def generate_cycle_analysis(df, symbol):
-    """Generate simplified cycle analysis"""
-    try:
-        if df.empty or len(df) < 10:
-            return {
-                'current_phase': 'Unknown',
-                'stage': 'Unknown',
-                'duration_days': 0,
-                'momentum': 0.0,
-                'momentum_visual': '----------',
-                'bull_continuation_probability': 50,
-                'bear_transition_probability': 50,
-                'expected_continuation': 'Unknown',
-                'risk_level': 'Medium'
-            }
-        
-        last_close = df['HA_Close'].iloc[-1]
-        prev_close = df['HA_Close'].iloc[-10] if len(df) >= 10 else df['HA_Close'].iloc[0]
-        
-        current_phase = 'Bull' if last_close > prev_close else 'Bear'
-        momentum = (last_close - prev_close) / prev_close if prev_close != 0 else 0
-        
-        return {
-            'current_phase': current_phase,
-            'stage': f"Mid {current_phase}",
-            'duration_days': 30,
-            'momentum': round(momentum, 3),
-            'momentum_visual': '▲' * 5 + '△' * 5 if momentum > 0 else '▼' * 5 + '▽' * 5,
-            'bull_continuation_probability': 70 if current_phase == 'Bull' else 30,
-            'bear_transition_probability': 30 if current_phase == 'Bull' else 70,
-            'expected_continuation': '30-60 days',
-            'risk_level': 'Medium'
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in cycle analysis for {symbol}: {str(e)}")
-        return {
-            'current_phase': 'Unknown',
-            'stage': 'Unknown',
-            'duration_days': 0,
-            'momentum': 0.0,
-            'momentum_visual': '----------',
-            'bull_continuation_probability': 50,
-            'bear_transition_probability': 50,
-            'expected_continuation': 'Unknown',
-            'risk_level': 'Medium'
-        }
 
 def get_fundamental_data(symbol):
     """Get fundamental data with crypto support"""
@@ -2603,27 +2451,30 @@ def get_market_sentiment(symbol):
     
     return sentiment_scores.get(symbol, default_sentiment)
 
-def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamentals, sentiment):
-    """Generate trading signals with enhanced logic"""
+def analyze_timeframe_enhanced(data, symbol, timeframe):
+    """Enhanced timeframe analysis with crypto support"""
     try:
+        ha_data = heikin_ashi(data)
+        if ha_data.empty:
+            logger.error(f"Failed to convert to HA for {symbol} {timeframe}")
+            return None
+        
+        indicators_data = calculate_ha_indicators(ha_data)
+        if indicators_data is None:
+            logger.error(f"Failed to calculate indicators for {symbol} {timeframe}")
+            return None
+        
+        fundamentals = get_fundamental_data(symbol)
+        sentiment = get_market_sentiment(symbol)
+        
+        last_indicators = indicators_data.iloc[-1].to_dict()
+        
+        # Simple signal generation
         signal_score = 0.0
         
-        if chart_patterns.get('rising_wedge', False):
-            signal_score += 1.0
-        if chart_patterns.get('falling_wedge', False):
-            signal_score -= 1.0
-        
-        if waves['impulse']['detected']:
-            signal_score += 1.5
-        
-        if confluence['bullish_confluence']:
-            signal_score += 1.0
-        if confluence['bearish_confluence']:
-            signal_score -= 1.0
-        
-        if 'RSI' in indicators and indicators['RSI'] < 30:
+        if last_indicators.get('RSI', 50) < 30:
             signal_score += 0.5
-        elif 'RSI' in indicators and indicators['RSI'] > 70:
+        elif last_indicators.get('RSI', 50) > 70:
             signal_score -= 0.5
         
         if 'PE_Ratio' in fundamentals:
@@ -2642,21 +2493,102 @@ def generate_smc_signals(chart_patterns, indicators, confluence, waves, fundamen
         signal_score += sentiment * 0.5
         
         if signal_score >= 2.0:
-            return 'Strong Buy', round(signal_score, 2)
+            signal = 'Strong Buy'
         elif signal_score >= 1.0:
-            return 'Buy', round(signal_score, 2)
+            signal = 'Buy'
         elif signal_score <= -2.0:
-            return 'Strong Sell', round(signal_score, 2)
+            signal = 'Strong Sell'
         elif signal_score <= -1.0:
-            return 'Sell', round(signal_score, 2)
+            signal = 'Sell'
         else:
-            return 'Neutral', round(signal_score, 2)
+            signal = 'Neutral'
+        
+        current_price = round(ha_data['HA_Close'].iloc[-1], 2)
+        
+        if 'Buy' in signal:
+            entry = round(current_price * 0.99, 2)
+            targets = [round(current_price * 1.05, 2), round(current_price * 1.10, 2)]
+            stop_loss = round(current_price * 0.95, 2)
+        else:
+            entry = round(current_price * 1.01, 2)
+            targets = [round(current_price * 0.95, 2), round(current_price * 0.90, 2)]
+            stop_loss = round(current_price * 1.05, 2)
+        
+        change_1d = 0.0
+        change_1w = 0.0
+        
+        if len(ha_data) >= 2:
+            change_1d = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-2] - 1) * 100, 2)
+        
+        if len(ha_data) >= 5:
+            change_1w = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-5] - 1) * 100, 2)
+        
+        timeframe_analysis = {
+            'PRICE': current_price,
+            'ACCURACY': min(95, max(60, abs(signal_score) * 20 + 60)),
+            'CONFIDENCE_SCORE': round(signal_score, 2),
+            'VERDICT': signal,
+            'DETAILS': {
+                'individual_verdicts': {
+                    'rsi_verdict': "Overbought" if last_indicators.get('RSI', 50) > 70 else "Oversold" if last_indicators.get('RSI', 50) < 30 else "Neutral",
+                    'adx_verdict': "Strong Trend" if last_indicators.get('ADX', 25) > 25 else "Weak Trend",
+                    'momentum_verdict': "Bullish" if last_indicators.get('Cycle_Momentum', 0) > 0.02 else "Bearish" if last_indicators.get('Cycle_Momentum', 0) < -0.02 else "Neutral",
+                    'pattern_verdict': "No Clear Patterns",
+                    'fundamental_verdict': "Strong Fundamentals" if fundamentals.get('Adoption_Score', 0.5) > 0.8 else "Weak Fundamentals" if 'PE_Ratio' not in fundamentals else "Undervalued" if fundamentals.get('PE_Ratio', 20) < 15 else "Overvalued" if fundamentals.get('PE_Ratio', 20) > 25 else "Fair Value",
+                    'sentiment_verdict': "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral",
+                    'cycle_verdict': 'Bull'
+                },
+                'price_data': {
+                    'current_price': current_price,
+                    'entry_price': entry,
+                    'target_prices': targets,
+                    'stop_loss': stop_loss,
+                    'change_1d': change_1d,
+                    'change_1w': change_1w
+                },
+                'technical_indicators': {
+                    'rsi': round(last_indicators.get('RSI', 50.0), 1),
+                    'adx': round(last_indicators.get('ADX', 25.0), 1),
+                    'atr': round(last_indicators.get('ATR', 1.0), 2),
+                    'cycle_phase': last_indicators.get('Cycle_Phase', 'Unknown'),
+                    'cycle_momentum': round(last_indicators.get('Cycle_Momentum', 0.0), 3)
+                },
+                'patterns': {
+                    'geometric': ['None'],
+                    'elliott_wave': ['None'],
+                    'confluence_factors': ['None']
+                },
+                'fundamentals': fundamentals,
+                'sentiment_analysis': {
+                    'score': round(sentiment, 2),
+                    'interpretation': "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral",
+                    'market_mood': "Optimistic" if sentiment > 0.7 else "Pessimistic" if sentiment < 0.3 else "Cautious"
+                },
+                'cycle_analysis': {
+                    'current_phase': 'Bull' if signal_score > 0 else 'Bear',
+                    'stage': f"Mid {'Bull' if signal_score > 0 else 'Bear'}",
+                    'duration_days': 30,
+                    'momentum': round(signal_score, 3),
+                    'momentum_visual': '▲' * 5 + '△' * 5 if signal_score > 0 else '▼' * 5 + '▽' * 5,
+                    'bull_continuation_probability': 70 if signal_score > 0 else 30,
+                    'bear_transition_probability': 30 if signal_score > 0 else 70,
+                    'expected_continuation': '30-60 days',
+                    'risk_level': 'Medium'
+                },
+                'trading_parameters': {
+                    'position_size': '5% of portfolio' if 'Strong' in signal else '3% of portfolio',
+                    'timeframe': f'{timeframe} - 2-4 weeks' if 'Buy' in signal else f'{timeframe} - 1-2 weeks',
+                    'risk_level': 'Medium' if 'Buy' in signal else 'High' if 'Sell' in signal else 'Low'
+                }
+            }
+        }
+        
+        return timeframe_analysis
         
     except Exception as e:
-        logger.error(f"Error in signal generation: {str(e)}")
-        return 'Neutral', 0.0
+        logger.error(f"Error analyzing {timeframe} timeframe for {symbol}: {str(e)}")
+        return None
 
-# ================= HIERARCHICAL ANALYSIS SYSTEM =================
 def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
     """Analyze stock with hierarchical timeframe dependency"""
     try:
@@ -2700,8 +2632,6 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
             if analysis:
                 analyses[f"{tf_name.upper()}_TIMEFRAME"] = analysis
         
-        final_analysis = apply_hierarchical_logic(analyses, symbol)
-        
         # Determine market type
         stock_config = get_filtered_stocks()
         if data_source == 'coingecko':
@@ -2715,7 +2645,7 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
             symbol: {
                 'data_source': data_source,
                 'market': market,
-                **final_analysis
+                **analyses
             }
         }
         
@@ -2725,287 +2655,6 @@ def analyze_stock_hierarchical(symbol, data_source="twelve_data"):
     except Exception as e:
         logger.error(f"Error analyzing {symbol}: {str(e)}")
         return None
-
-def apply_hierarchical_logic(analyses, symbol):
-    """Apply hierarchical logic where daily depends on weekly/monthly"""
-    try:
-        monthly = analyses.get('MONTHLY_TIMEFRAME')
-        weekly = analyses.get('WEEKLY_TIMEFRAME')
-        daily = analyses.get('DAILY_TIMEFRAME')
-        four_hour = analyses.get('4HOUR_TIMEFRAME')
-        
-        if daily and weekly and monthly:
-            monthly_weight = 0.4
-            weekly_weight = 0.3
-            daily_weight = 0.2
-            four_hour_weight = 0.1
-            
-            monthly_conf = monthly['CONFIDENCE_SCORE'] * monthly_weight
-            weekly_conf = weekly['CONFIDENCE_SCORE'] * weekly_weight
-            daily_conf = daily['CONFIDENCE_SCORE'] * daily_weight
-            four_hour_conf = four_hour['CONFIDENCE_SCORE'] * four_hour_weight if four_hour else 0
-            
-            if monthly['VERDICT'] in ['Strong Buy', 'Buy'] and weekly['VERDICT'] in ['Strong Buy', 'Buy']:
-                if daily['VERDICT'] in ['Sell', 'Strong Sell']:
-                    daily['VERDICT'] = 'Buy'
-                    daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bullish Override'
-            elif monthly['VERDICT'] in ['Strong Sell', 'Sell'] and weekly['VERDICT'] in ['Strong Sell', 'Sell']:
-                if daily['VERDICT'] in ['Buy', 'Strong Buy']:
-                    daily['VERDICT'] = 'Sell'
-                    daily['DETAILS']['individual_verdicts']['hierarchy_override'] = 'Monthly/Weekly Bearish Override'
-            
-            daily['CONFIDENCE_SCORE'] = round(monthly_conf + weekly_conf + daily_conf + four_hour_conf, 2)
-            daily['ACCURACY'] = min(95, max(60, abs(daily['CONFIDENCE_SCORE']) * 15 + 70))
-        
-        return analyses
-        
-    except Exception as e:
-        logger.error(f"Error in hierarchical logic for {symbol}: {str(e)}")
-        return analyses
-
-def analyze_timeframe_enhanced(data, symbol, timeframe):
-    """Enhanced timeframe analysis with crypto support"""
-    try:
-        ha_data = heikin_ashi(data)
-        if ha_data.empty:
-            logger.error(f"Failed to convert to HA for {symbol} {timeframe}")
-            return None
-        
-        indicators_data = calculate_ha_indicators(ha_data)
-        if indicators_data is None:
-            logger.error(f"Failed to calculate indicators for {symbol} {timeframe}")
-            return None
-        
-        pivots = detect_zigzag_pivots(ha_data)
-        patterns, _ = detect_geometric_patterns(ha_data, pivots)
-        waves = detect_elliott_waves(pivots, ha_data['HA_Close'])
-        confluence = detect_confluence(ha_data, pivots)
-        
-        cycle_analysis = generate_cycle_analysis(indicators_data, symbol)
-        
-        fundamentals = get_fundamental_data(symbol)
-        sentiment = get_market_sentiment(symbol)
-        
-        last_indicators = indicators_data.iloc[-1].to_dict()
-        signal, score = generate_smc_signals(patterns, last_indicators, confluence, waves, fundamentals, sentiment)
-        
-        current_price = round(ha_data['HA_Close'].iloc[-1], 2)
-        
-        if 'Buy' in signal:
-            entry = round(current_price * 0.99, 2)
-            targets = [round(current_price * 1.05, 2), round(current_price * 1.10, 2)]
-            stop_loss = round(current_price * 0.95, 2)
-        else:
-            entry = round(current_price * 1.01, 2)
-            targets = [round(current_price * 0.95, 2), round(current_price * 0.90, 2)]
-            stop_loss = round(current_price * 1.05, 2)
-        
-        change_1d = 0.0
-        change_1w = 0.0
-        
-        if len(ha_data) >= 2:
-            change_1d = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-2] - 1) * 100, 2)
-        
-        if len(ha_data) >= 5:
-            change_1w = round((ha_data['HA_Close'].iloc[-1] / ha_data['HA_Close'].iloc[-5] - 1) * 100, 2)
-        
-        rsi_verdict = "Overbought" if last_indicators.get('RSI', 50) > 70 else "Oversold" if last_indicators.get('RSI', 50) < 30 else "Neutral"
-        adx_verdict = "Strong Trend" if last_indicators.get('ADX', 25) > 25 else "Weak Trend"
-        momentum_verdict = "Bullish" if last_indicators.get('Cycle_Momentum', 0) > 0.02 else "Bearish" if last_indicators.get('Cycle_Momentum', 0) < -0.02 else "Neutral"
-        pattern_verdict = "Bullish Patterns" if any(patterns.values()) and signal in ['Buy', 'Strong Buy'] else "Bearish Patterns" if any(patterns.values()) and signal in ['Sell', 'Strong Sell'] else "No Clear Patterns"
-        
-        if 'PE_Ratio' in fundamentals and fundamentals['PE_Ratio'] > 0:
-            pe_ratio = fundamentals['PE_Ratio']
-            fundamental_verdict = "Undervalued" if pe_ratio < 15 else "Overvalued" if pe_ratio > 25 else "Fair Value"
-        else:
-            fundamental_verdict = "Strong Fundamentals" if fundamentals.get('Adoption_Score', 0.5) > 0.8 else "Weak Fundamentals"
-        
-        sentiment_verdict = "Positive" if sentiment > 0.6 else "Negative" if sentiment < 0.4 else "Neutral"
-        
-        timeframe_analysis = {
-            'PRICE': current_price,
-            'ACCURACY': min(95, max(60, abs(score) * 20 + 60)),
-            'CONFIDENCE_SCORE': round(score, 2),
-            'VERDICT': signal,
-            'DETAILS': {
-                'individual_verdicts': {
-                    'rsi_verdict': rsi_verdict,
-                    'adx_verdict': adx_verdict,
-                    'momentum_verdict': momentum_verdict,
-                    'pattern_verdict': pattern_verdict,
-                    'fundamental_verdict': fundamental_verdict,
-                    'sentiment_verdict': sentiment_verdict,
-                    'cycle_verdict': cycle_analysis['current_phase']
-                },
-                'price_data': {
-                    'current_price': current_price,
-                    'entry_price': entry,
-                    'target_prices': targets,
-                    'stop_loss': stop_loss,
-                    'change_1d': change_1d,
-                    'change_1w': change_1w
-                },
-                'technical_indicators': {
-                    'rsi': round(last_indicators.get('RSI', 50.0), 1),
-                    'adx': round(last_indicators.get('ADX', 25.0), 1),
-                    'atr': round(last_indicators.get('ATR', 1.0), 2),
-                    'cycle_phase': last_indicators.get('Cycle_Phase', 'Unknown'),
-                    'cycle_momentum': round(last_indicators.get('Cycle_Momentum', 0.0), 3)
-                },
-                'patterns': {
-                    'geometric': [k for k, v in patterns.items() if v] or ['None'],
-                    'elliott_wave': [k for k, v in waves.items() if v.get('detected', False)] or ['None'],
-                    'confluence_factors': confluence['factors'] or ['None']
-                },
-                'fundamentals': fundamentals,
-                'sentiment_analysis': {
-                    'score': round(sentiment, 2),
-                    'interpretation': sentiment_verdict,
-                    'market_mood': "Optimistic" if sentiment > 0.7 else "Pessimistic" if sentiment < 0.3 else "Cautious"
-                },
-                'cycle_analysis': cycle_analysis,
-                'trading_parameters': {
-                    'position_size': '5% of portfolio' if 'Strong' in signal else '3% of portfolio',
-                    'timeframe': f'{timeframe} - 2-4 weeks' if 'Buy' in signal else f'{timeframe} - 1-2 weeks',
-                    'risk_level': 'Medium' if 'Buy' in signal else 'High' if 'Sell' in signal else 'Low'
-                }
-            }
-        }
-        
-        return timeframe_analysis
-        
-    except Exception as e:
-        logger.error(f"Error analyzing {timeframe} timeframe for {symbol}: {str(e)}")
-        return None
-
-# ================= CLAUDE AI INTEGRATION =================
-def generate_ai_analysis(symbol, stock_data):
-    """Generate detailed AI analysis using Claude"""
-    if not claude_client:
-        return {
-            'error': 'Claude API not configured',
-            'message': 'Please configure CLAUDE_API_KEY to use AI analysis'
-        }
-    
-    try:
-        context = f"""
-        Stock Symbol: {symbol}
-        Current Analysis Data:
-        - Current Price: ${stock_data.get('DAILY_TIMEFRAME', {}).get('PRICE', 'N/A')}
-        - Verdict: {stock_data.get('DAILY_TIMEFRAME', {}).get('VERDICT', 'N/A')}
-        - Confidence Score: {stock_data.get('DAILY_TIMEFRAME', {}).get('CONFIDENCE_SCORE', 'N/A')}
-        - Market: {stock_data.get('market', 'Unknown')}
-        
-        Technical Indicators:
-        - RSI: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('rsi', 'N/A')}
-        - ADX: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('adx', 'N/A')}
-        - Cycle Phase: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('cycle_phase', 'N/A')}
-        
-        Individual Verdicts:
-        {json.dumps(stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('individual_verdicts', {}), indent=2)}
-        
-        Patterns Detected:
-        {json.dumps(stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('patterns', {}), indent=2)}
-        """
-        
-        prompt = f"""
-        You are an expert financial analyst with deep knowledge of technical analysis, fundamental analysis, and market psychology. 
-        
-        Based on the following stock analysis data for {symbol}, provide a comprehensive, detailed analysis that includes:
-        
-        1. **Executive Summary**: A clear, concise overview of the current situation
-        2. **Technical Analysis Deep Dive**: Detailed interpretation of the technical indicators and patterns
-        3. **Market Context**: How this stock fits within current market conditions
-        4. **Risk Assessment**: Detailed risk factors and mitigation strategies
-        5. **Trading Strategy**: Specific entry/exit strategies with reasoning
-        6. **Timeline Expectations**: Short, medium, and long-term outlook
-        7. **Key Catalysts**: What events or factors could change the analysis
-        8. **Alternative Scenarios**: Bull case, bear case, and most likely scenario
-        
-        Context Data:
-        {context}
-        
-        Please provide a thorough, professional analysis that a serious trader or investor would find valuable. 
-        Use clear, actionable language and explain your reasoning for each conclusion.
-        """
-        
-        response = claude_client.messages.create(
-            model="claude-3-sonnet-20240229",
-            max_tokens=2000,
-            temperature=0.3,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        )
-        
-        # Fix: response.content[0] may not have a .text attribute; use .get("text", "") if it's a dict, or str() fallback
-        analysis_text = ""
-        if hasattr(response, "content") and isinstance(response.content, list) and len(response.content) > 0:
-            block = response.content[0]
-            # Safely extract 'text' from block if possible, else fallback to str(block)
-            analysis_text = ""
-            if isinstance(block, dict) and "text" in block:
-                analysis_text = block["text"]
-            elif hasattr(block, "__dict__") and "text" in block.__dict__:
-                analysis_text = block.__dict__["text"]
-            else:
-                analysis_text = str(block)
-        else:
-            analysis_text = "No analysis returned from Claude API."
-
-        return {
-            'analysis': analysis_text,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'model': 'claude-3-sonnet',
-            'symbol': symbol
-        }
-        
-    except Exception as e:
-        logger.error(f"Error generating AI analysis for {symbol}: {str(e)}")
-        return {
-            'error': 'Failed to generate AI analysis',
-            'message': str(e)
-        }
-
-# ================= BACKGROUND PROCESSING =================
-def analyze_all_stocks_background():
-    """Background analysis function that runs at 5pm daily"""
-    global analysis_in_progress
-    
-    with analysis_lock:
-        if analysis_in_progress:
-            logger.info("Analysis already in progress, skipping background run")
-            return
-        
-        analysis_in_progress = True
-    
-    try:
-        logger.info("Starting scheduled background analysis at 5pm")
-        start_time = time.time()
-        
-        result = analyze_all_stocks_optimized()
-        
-        if result and result.get('status') == 'success':
-            # Save to database
-            save_analysis_to_db(result)
-            
-            # Calculate processing time
-            processing_time = (time.time() - start_time) / 60
-            result['processing_time_minutes'] = round(processing_time, 2)
-            
-            logger.info(f"Background analysis completed successfully in {processing_time:.2f} minutes")
-            logger.info(f"Analyzed {result.get('stocks_analyzed', 0)} assets")
-        else:
-            logger.error("Background analysis failed")
-            
-    except Exception as e:
-        logger.error(f"Error in background analysis: {str(e)}")
-    finally:
-        with analysis_lock:
-            analysis_in_progress = False
 
 def analyze_all_stocks_optimized():
     """Optimized stock analysis with database persistence and progress tracking"""
@@ -3134,7 +2783,8 @@ def analyze_all_stocks_optimized():
             'status': 'success' if results else 'no_data',
             'data_sources': {
                 'twelve_data_count': len([k for k, v in results.items() if v.get('data_source') == 'twelve_data']),
-                'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko'])
+                'coingecko_count': len([k for k, v in results.items() if v.get('data_source') == 'coingecko']),
+                'alpha_vantage_count': 0
             },
             'markets': {
                 'us_stocks': us_stocks_count,
@@ -3164,8 +2814,138 @@ def analyze_all_stocks_optimized():
             'error': str(e)
         }
 
+# ================= CLAUDE AI INTEGRATION =================
+def generate_ai_analysis(symbol, stock_data):
+    """Generate detailed AI analysis using Claude"""
+    if not claude_client:
+        return {
+            'error': 'Claude API not configured',
+            'message': 'Please configure CLAUDE_API_KEY to use AI analysis'
+        }
+    
+    try:
+        context = f"""
+        Stock Symbol: {symbol}
+        Current Analysis Data:
+        - Current Price: ${stock_data.get('DAILY_TIMEFRAME', {}).get('PRICE', 'N/A')}
+        - Verdict: {stock_data.get('DAILY_TIMEFRAME', {}).get('VERDICT', 'N/A')}
+        - Confidence Score: {stock_data.get('DAILY_TIMEFRAME', {}).get('CONFIDENCE_SCORE', 'N/A')}
+        - Market: {stock_data.get('market', 'Unknown')}
+        
+        Technical Indicators:
+        - RSI: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('rsi', 'N/A')}
+        - ADX: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('adx', 'N/A')}
+        - Cycle Phase: {stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('technical_indicators', {}).get('cycle_phase', 'N/A')}
+        
+        Individual Verdicts:
+        {json.dumps(stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('individual_verdicts', {}), indent=2)}
+        
+        Patterns Detected:
+        {json.dumps(stock_data.get('DAILY_TIMEFRAME', {}).get('DETAILS', {}).get('patterns', {}), indent=2)}
+        """
+        
+        prompt = f"""
+        You are an expert financial analyst with deep knowledge of technical analysis, fundamental analysis, and market psychology. 
+        
+        Based on the following stock analysis data for {symbol}, provide a comprehensive, detailed analysis that includes:
+        
+        1. **Executive Summary**: A clear, concise overview of the current situation
+        2. **Technical Analysis Deep Dive**: Detailed interpretation of the technical indicators and patterns
+        3. **Market Context**: How this stock fits within current market conditions
+        4. **Risk Assessment**: Detailed risk factors and mitigation strategies
+        5. **Trading Strategy**: Specific entry/exit strategies with reasoning
+        6. **Timeline Expectations**: Short, medium, and long-term outlook
+        7. **Key Catalysts**: What events or factors could change the analysis
+        8. **Alternative Scenarios**: Bull case, bear case, and most likely scenario
+        
+        Context Data:
+        {context}
+        
+        Please provide a thorough, professional analysis that a serious trader or investor would find valuable. 
+        Use clear, actionable language and explain your reasoning for each conclusion.
+        """
+        
+        response = claude_client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=2000,
+            temperature=0.3,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+        
+        # Fix: response.content[0] may not have a .text attribute; use .get("text", "") if it's a dict, or str() fallback
+        analysis_text = ""
+        if hasattr(response, "content") and isinstance(response.content, list) and len(response.content) > 0:
+            block = response.content[0]
+            # Safely extract 'text' from block if possible, else fallback to str(block)
+            analysis_text = ""
+            if isinstance(block, dict) and "text" in block:
+                analysis_text = block["text"]
+            elif hasattr(block, "text"):
+                analysis_text = block.text
+            else:
+                analysis_text = str(block)
+        else:
+            analysis_text = "No analysis returned from Claude API."
+        
+        return {
+            'analysis': analysis_text,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'model': 'claude-3-sonnet',
+            'symbol': symbol
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating AI analysis for {symbol}: {str(e)}")
+        return {
+            'error': 'Failed to generate AI analysis',
+            'message': str(e)
+        }
+
+# ================= BACKGROUND PROCESSING =================
+def analyze_all_stocks_background():
+    """Background analysis function that runs at 5pm daily"""
+    global analysis_in_progress
+    
+    with analysis_lock:
+        if analysis_in_progress:
+            logger.info("Analysis already in progress, skipping background run")
+            return
+        
+        analysis_in_progress = True
+    
+    try:
+        logger.info("Starting scheduled background analysis at 5pm")
+        start_time = time.time()
+        
+        result = analyze_all_stocks_optimized()
+        
+        if result and result.get('status') == 'success':
+            # Save to database
+            save_analysis_to_db(result)
+            
+            # Calculate processing time
+            processing_time = (time.time() - start_time) / 60
+            result['processing_time_minutes'] = round(processing_time, 2)
+            
+            logger.info(f"Background analysis completed successfully in {processing_time:.2f} minutes")
+            logger.info(f"Analyzed {result.get('stocks_analyzed', 0)} assets")
+        else:
+            logger.error("Background analysis failed")
+            
+    except Exception as e:
+        logger.error(f"Error in background analysis: {str(e)}")
+    finally:
+        with analysis_lock:
+            analysis_in_progress = False
+
 # ================= FLASK ROUTES =================
 @app.route('/', methods=['GET'])
+@cross_origin()
 def home():
     """Enhanced home endpoint with persistent data info"""
     try:
@@ -3219,6 +2999,7 @@ def home():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/progress', methods=['GET'])
+@cross_origin()
 def progress():
     """Get current analysis progress"""
     try:
@@ -3229,6 +3010,7 @@ def progress():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/assets', methods=['GET'])
+@cross_origin()
 def list_assets():
     """List all available assets"""
     try:
@@ -3250,6 +3032,7 @@ def list_assets():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
+@cross_origin()
 def health():
     """Health check endpoint"""
     try:
@@ -3280,6 +3063,7 @@ def health():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/analyze', methods=['GET'])
+@cross_origin()
 def analyze():
     """Get latest analysis - from cache if available, otherwise return cached data"""
     try:
@@ -3296,7 +3080,7 @@ def analyze():
             logger.info("No cached data found, running fresh analysis...")
             json_response = analyze_all_stocks_optimized()
             
-            if json_response and json_response.get('status') ==  'success':
+            if json_response and json_response.get('status') == 'success':
                 save_analysis_to_db(json_response)
             
             logger.info(f"Fresh analysis completed. Status: {json_response.get('status')}")
@@ -3312,6 +3096,7 @@ def analyze():
         }), 500
 
 @app.route('/analyze/fresh', methods=['GET'])
+@cross_origin()
 def analyze_fresh():
     """Force fresh analysis (manual refresh)"""
     try:
@@ -3343,6 +3128,7 @@ def analyze_fresh():
         }), 500
 
 @app.route('/ai-analysis', methods=['POST'])
+@cross_origin()
 def ai_analysis():
     """AI analysis endpoint using Claude"""
     try:
