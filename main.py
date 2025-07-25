@@ -4681,7 +4681,7 @@ def get_fundamental_data(symbol):
         # Cryptos
         'BTC': 0, 'ETH': 0, 'BNB': 0, 'SOL': 0, 'ADA': 0,
         'AVAX': 0, 'DOT': 0, 'LINK': 0, 'MATIC': 0, 'LTC': 0
-    ]
+    }
     
     is_nigerian = symbol in ['ACCESS', 'GTCO', 'UBA', 'ZENITHBANK', 'FBNH', 'DANGCEM', 'BUACEMENT', 'WAPCO',
                              'DANGSUGAR', 'NESTLE', 'UNILEVER', 'SEPLAT', 'TOTAL', 'MTNN', 'TRANSCORP']
