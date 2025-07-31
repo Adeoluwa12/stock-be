@@ -5630,17 +5630,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pickle
 import threading
+import os
 
 warnings.filterwarnings('ignore')
 
 # ================= ENHANCED GLOBAL CONFIGURATION =================
-TWELVE_DATA_API_KEY = "73adc6cc7e43476e851dcf54c705aeeb"
-ALPHA_VANTAGE_API_KEY = "AK656KG03APJM5ZC"
+
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY")
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
 # UPDATED: Changed from Claude to OpenRouter
-OPENROUTER_API_KEY = "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"  # Replace with your OpenRouter API key
-CRYPTCOMPARE_API_KEY = "3ed1cb75b7ab0925fc3af1e27c4df4aaa2b77d9668824e310c7bc0e60f83e5f7"
-CRYPTCOMPARE_BASE_URL = "https://min-api.cryptocompare.com/data"
-NAIJASTOCKS_BASE_URL = "https://nigerian-stocks-api.vercel.app/api"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")  # Replace with your OpenRouter API key in .env
+CRYPTCOMPARE_API_KEY = os.environ.get("CRYPTCOMPARE_API_KEY")
+CRYPTCOMPARE_BASE_URL = os.environ.get("CRYPTCOMPARE_BASE_URL", "https://min-api.cryptocompare.com/data")
+NAIJASTOCKS_BASE_URL = os.environ.get("NAIJASTOCKS_BASE_URL", "https://nigerian-stocks-api.vercel.app/api")
 
 # Database configuration
 DATABASE_PATH = "stock_analysis.db"
