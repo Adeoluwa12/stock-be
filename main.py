@@ -4337,6 +4337,11 @@ warnings.filterwarnings('ignore')
 import sys
 import io
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (if present)
+load_dotenv()
+
 # Set up UTF-8 compatible logging
 class UTF8StreamHandler(logging.StreamHandler):
     def __init__(self, stream=None):
@@ -4366,20 +4371,28 @@ CORS(app)
 # =============================================================================
 
 # Twelve Data API
-TWELVE_DATA_API_KEY = os.getenv('TWELVE_DATA_API_KEY', '73adc6cc7e43476e851dcf54c705aeeb')
-TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+TWELVE_DATA_API_KEY = os.environ['TWELVE_DATA_API_KEY']
+TWELVE_DATA_BASE_URL = os.environ.get('TWELVE_DATA_BASE_URL', "https://api.twelvedata.com")
+print("TWELVE_DATA_API_KEY:", TWELVE_DATA_API_KEY)
+print("TWELVE_DATA_BASE_URL:", TWELVE_DATA_BASE_URL)
 
 # Alpha Vantage API
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'AK656KG03APJM5ZC')
-ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
+ALPHA_VANTAGE_API_KEY = os.environ['ALPHA_VANTAGE_API_KEY']
+ALPHA_VANTAGE_BASE_URL = os.environ.get('ALPHA_VANTAGE_BASE_URL', "https://www.alphavantage.co/query")
+print("ALPHA_VANTAGE_API_KEY:", ALPHA_VANTAGE_API_KEY)
+print("ALPHA_VANTAGE_BASE_URL:", ALPHA_VANTAGE_BASE_URL)
 
 # Groq API for AI Analysis
-GROQ_API_KEY = os.getenv('GROQ_API_KEY', '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')
-GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_API_KEY = os.environ['GROQ_API_KEY']
+GROQ_BASE_URL = os.environ.get('GROQ_BASE_URL', "https://api.groq.com/openai/v1/chat/completions")
+print("GROQ_API_KEY:", GROQ_API_KEY)
+print("GROQ_BASE_URL:", GROQ_BASE_URL)
 
 # CryptoCompare API
-CRYPTO_COMPARE_API_KEY = os.getenv('CRYPTO_COMPARE_API_KEY', '3ed1cb75b7ab0925fc3af1e27c4df4aaa2b77d9668824e310c7bc0e60f83e5f7')
-CRYPTO_COMPARE_BASE_URL = "https://min-api.cryptocompare.com/data"
+CRYPTOCOMPARE_API_KEY = os.environ['CRYPTCOMPARE_API_KEY']
+CRYPTOCOMPARE_BASE_URL = os.environ.get('CRYPTCOMPARE_BASE_URL', "https://min-api.cryptocompare.com/data")
+print("CRYPTO_COMPARE_API_KEY:", CRYPTOCOMPARE_API_KEY)
+print("CRYPTO_COMPARE_BASE_URL:", CRYPTOCOMPARE_BASE_URL)
 
 # =============================================================================
 # DATABASE SETUP

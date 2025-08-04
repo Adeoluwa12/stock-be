@@ -3101,3 +3101,13 @@
 2025-08-04 21:29:42,015 - INFO - Returning cached analysis data
 2025-08-04 21:29:42,043 - INFO - 127.0.0.1 - - [04/Aug/2025 21:29:42] "GET /analyze HTTP/1.1" 200 -
 2025-08-04 21:29:57,209 - INFO - 127.0.0.1 - - [04/Aug/2025 21:29:57] "POST /ai-analysis HTTP/1.1" 200 -
+2025-08-04 21:47:51,143 - INFO - Starting Enhanced Multi-Asset Stock Analysis API v8.5
+2025-08-04 21:47:51,143 - INFO - Total assets: 123 (US: 50, Nigerian: 48, Crypto: 25)
+2025-08-04 21:47:51,143 - INFO - AI Analysis: Enabled
+2025-08-04 21:47:51,143 - INFO - Data Sources: yfinance (primary), TradingView Scraper, TwelveData, CryptoCompare, Alpha Vantage
+2025-08-04 21:47:51,143 - INFO - Features: Hierarchical analysis, Timeframe resampling, Smart fallbacks
+2025-08-04 21:47:51,159 - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.194.7.147:5000
+2025-08-04 21:47:51,159 - INFO - [33mPress CTRL+C to quit[0m
