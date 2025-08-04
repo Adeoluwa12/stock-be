@@ -21,3 +21,4 @@ anthropic
 
 # Scheduling
 apscheduler
+tradingview_scraper
